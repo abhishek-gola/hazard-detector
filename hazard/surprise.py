@@ -218,6 +218,31 @@ def compute_surprise(
         residual = residual / sigma
     residual[~valid] = 0.0
 
+    return score_from_residual(
+        residual, valid, smooth_sigma=smooth_sigma, threshold=threshold,
+        normalised_blur=normalised_blur,
+    )
+
+
+def score_from_residual(
+    residual: np.ndarray,
+    valid: np.ndarray,
+    *,
+    smooth_sigma: float = 1.5,
+    threshold: float = 4.0,
+    normalised_blur: bool = True,
+) -> SurpriseMap:
+    """Robust per-frame normalisation, shared by every residual space.
+
+    Split out so that the depth-residual method and the optical-flow baseline
+    go through *identical* downstream code. If they did not, a comparison
+    between them would be measuring my two implementations rather than the two
+    residuals, and the baseline would be worth nothing.
+    """
+    h, w = residual.shape
+    residual = residual.copy()
+    residual[~valid] = 0.0
+
     if valid.sum() < 64:
         empty = np.zeros((h, w), dtype=np.float32)
         return SurpriseMap(empty, valid, residual, 0.0, 0.0, 0.0, 0.0)
@@ -244,13 +269,8 @@ def compute_surprise(
 
     peak = float(np.percentile(score[valid], 99.5)) if valid.any() else 0.0
     area = float((score[valid] > threshold).mean()) if valid.any() else 0.0
-
     return SurpriseMap(
-        score=score.astype(np.float32),
-        valid=valid,
+        score=score.astype(np.float32), valid=valid,
         residual=residual.astype(np.float32),
-        frame_median=med,
-        frame_mad=mad,
-        peak=peak,
-        area=area,
+        frame_median=med, frame_mad=mad, peak=peak, area=area,
     )

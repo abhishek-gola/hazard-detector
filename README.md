@@ -38,18 +38,89 @@ to what you actually mean by "hazard" than "there is a car here".
 
 ## Results
 
-KITTI raw drive `2011_09_26_drive_0009`, frames 200–408 at stride 2, 103 frames
-scored. Ground truth is KITTI tracklets restricted to objects whose motion
-cannot be explained by ego motion — 9 of the drive's 98 tracklets, 58 visible
-instances against 562 parked ones. The detector never sees any of it.
+Two things to read first, because they change how the rest should be taken.
 
-### Is the signal real?
+**Everything was tuned on one drive, and the held-out numbers are much worse.**
+Drive 0009's junction gives 48.3 % recall. The same frozen configuration, run
+once on two drives downloaded afterwards, gives **10.5 %**. That gap is the
+headline finding of this project.
 
-The first thing to rule out is that this is just noise from VGGT's depth head.
+**Recall is governed by tangential motion and apparent size, not by a single
+number.** Any scalar recall figure here is a property of the traffic in the clip
+as much as of the method.
+
+### Held-out test — frozen config, run once
+
+Everything (noise model, blur, threshold 8, tracker gate, blob rules) was chosen
+on drive 0009. Drives 0013 and 0014 were fetched afterwards and
+`scripts/test_once.py` is the only thing ever run on them. No knob was touched
+after seeing this.
+
+Confidence intervals bootstrap over **tracklets**, not instances — one moving car
+contributes ~20 correlated frames, so resampling instances would give intervals
+several times too narrow.
+
+| method | instances | tracklets | recall | 95 % CI | precision | parked FP |
+|---|---|---|---|---|---|---|
+| **depth residual** | 257 | 31 | **10.5 %** | [3.4, 22.0] | 19.9 % | 13.6 % |
+| flow residual | 257 | 31 | 1.6 % | [0.3, 3.8] | 1.6 % | 3.0 % |
+
+Per drive: 0013 gives 22.8 % recall, 0014 gives 7.0 %. The CIs are wide because
+31 tracklets is not many — that is the honest width, not a presentation choice.
+
+**Recall by apparent size, pooled held-out:**
+
+| box area | n | recall | 95 % CI |
+|---|---|---|---|
+| < 600 px² | 135 | **0.0 %** | [0.0, 0.0] |
+| 600–2000 px² | 77 | 5.2 % | [0.0, 11.3] |
+| > 2000 px² | 45 | **51.1 %** | [29.2, 69.6] |
+
+Large objects generalise. Everything below ~2000 px² — which is more than half
+of all annotated moving vehicles — is essentially invisible. Drive 0009 looked
+good largely because its junction traffic is close, large and crossing.
+
+### The baseline that decides whether VGGT earns its place
+
+`identity` was a straw man. The real question is whether a 1.3 B-parameter
+transformer beats Farnebäck plus a RANSAC fundamental matrix — dense flow, fit
+the ego-motion a rigid scene would produce, flag the Sampson error that does not
+fit. No depth, no weights. Both methods share the same normalisation, blob
+extractor, tracker and threshold grid, so only the residual space differs.
+
+Drive 0009 junction, as PR curves rather than operating points:
+
+| method | AP | best F1 | max recall | R @ FP≤5 % | prec @ R≥30 % |
+|---|---|---|---|---|---|
+| **depth residual** | **0.186** | **0.374** | 51.7 % | 37.9 % | 39.6 % |
+| flow residual | 0.021 | 0.114 | 31.0 % | 8.6 % | 5.4 % |
+
+And at the raw-signal level, no detector involved — mean surprise inside
+annotated boxes, moving vs parked:
+
+| residual space | AUC |
+|---|---|
+| **depth** | **0.838** |
+| flow, range-normalised | 0.675 |
+| flow, raw Sampson | 0.627 |
+
+Depth wins in the signal, not just in my tuning of the detector. The range
+normalisation is a fairness fix: the depth residual is relative (|ΔD|/D) and so
+scale-aware, while raw Sampson error is in absolute pixels; flow magnitude goes
+as 1/depth for a forward-moving camera, so dividing by it recovers the same
+normalisation without using depth. It helps the baseline's box-level AUC and
+*hurts* it as a detector (AP 0.005), so the stronger raw variant is reported
+above.
+
+**Caveat that matters:** Farnebäck is a weak flow estimator. RAFT would likely
+narrow this gap and has not been tried. The claim is "depth residual beats
+classical flow residual", not "beats the best possible flow method".
+
+### Is the signal real, or is it depth-head noise?
+
 The control: **a parked car and a moving car are the same object** — same paint,
 same glass, same silhouette, same depth discontinuities. Depth noise cannot tell
-them apart. So read the raw surprise map inside every annotated box, with no
-threshold, no blobs and no tracking:
+them apart. Raw surprise inside every annotated box, no threshold, no blobs:
 
 | | n | mean score |
 |---|---|---|
@@ -61,8 +132,8 @@ threshold, no blobs and no tracking:
 - AUC parked vs random: **0.593** — being a car barely lifts the score; *moving* does
 - Range-matched ratios: **8.9× / 9.2× / 3.2× / 6.3×** at 0–15 / 15–25 / 25–40 / 40+ m
 
-An object detector separates moving from parked at AUC 0.500 by construction:
-same pixels, same answer. This is the one thing here that a detector cannot do.
+An object detector separates moving from parked at AUC 0.500 *by construction* —
+same pixels, same answer. That is the one thing here a detector cannot do.
 
 ### The forecast is what produces it
 
@@ -70,54 +141,106 @@ Both forecasters at the same threshold, so recall is matched exactly:
 
 | | **rigid** (geometry forecast) | **identity** (ablation) |
 |---|---|---|
-| recall, moving objects | 34.5 % | 34.5 % |
+| recall | 34.5 % | 34.5 % |
 | **precision** | **34.3 %** | 5.4 % |
-| **false-flag rate on parked vehicles** | **2.8 %** | 28.4 % |
-| detections emitted | 67 | 351 |
+| **parked false-flag rate** | **2.8 %** | 28.4 % |
+| detections | 67 | 351 |
 
-`identity` predicts nothing changes, so every parked car sliding past the camera
-looks like a hazard. **At identical recall the geometry forecast is 6.4× more
-precise and flags parked cars 10× less often.**
+At identical recall the geometry forecast is 6.4× more precise and flags parked
+cars 10× less often.
 
-### Fixing the decision layer
+### What the small-object fixes bought
 
-The first version of the detector wasted most of that signal. Two changes, and
-neither works without the other:
+Drive 0009 junction, cumulative, threshold 8:
 
-| configuration | recall | precision | parked FP | F1 |
+| config | recall | precision | parked FP | F1 | <600 | 600–2k | >2k |
+|---|---|---|---|---|---|---|---|
+| base (hard edge mask) | 36.2 % | 32.0 % | 3.2 % | 0.340 | 0/5 | 6/30 | 15/23 |
+| + normalised blur | 41.4 % | 31.8 % | 3.7 % | 0.359 | 0/5 | 8/30 | 16/23 |
+| **+ noise model** (shipped) | **48.3 %** | **31.5 %** | **6.8 %** | **0.381** | 0/5 | 7/30 | **21/23** |
+| + row-scaled min_area | 69.0 % | 23.8 % | 12.5 % | 0.354 | 1/5 | 16/30 | 23/23 |
+
+Compared as curves rather than points, because these configs emit different
+numbers of detections and some of that recall is bought with false alarms:
+
+| config | AP | best F1 | R @ FP≤3 % | R @ FP≤5 % | R @ FP≤8 % |
+|---|---|---|---|---|---|
+| base | 0.174 | 0.340 | **27.6 %** | 36.2 % | 39.7 % |
+| shipped | **0.193** | **0.381** | 17.2 % | **39.7 %** | **48.3 %** |
+
+**Not a uniform win.** The noise model dominates on AP, on best F1 and
+everywhere above FP ≥ 5 %, but at very tight false-alarm rates the old hard mask
+is better. Large-object recall goes 65 % → 91 %.
+
+`--row-scaled-area` reaches the highest recall anything reached (69 %) but costs
+precision throughout the useful region, so it is off by default.
+
+---
+
+## Negative results
+
+Three, all measured, all reproducible. They cost real compute and they are the
+most informative part of the project.
+
+### 1. The small-object floor is in the signal, not the decision layer
+
+The premise was that masking and blurring destroyed small objects before the
+detector saw them. Partly true — normalised blur and the noise model bought 12
+points of recall on drive 0009. But the calibration segment (frames 0–196,
+16 moving instances, median 422 px², median range 42.6 m) yields **0 % recall at
+every configuration and every threshold from 4 to 25**, and the pooled held-out
+< 600 px² bucket is **0/135**.
+
+So the floor is not fixable downstream. Box-level AUC on that segment is
+**0.476** — below chance. At ~40 m a vehicle's inter-frame depth change is inside
+VGGT's own depth noise, and no amount of thresholding recovers a signal that is
+not there.
+
+### 2. Recall tracks tangential motion, not size alone
+
+Why the calibration segment produces nothing, when junction objects at the same
+range are detected fine (AUC 0.828):
+
+| tangential residual speed | n | mean score |
+|---|---|---|
+| 0.00–0.15 m/frame | 16 | 1.57 |
+| 0.15–0.40 | 14 | 2.37 |
+| 0.40–0.80 | 27 | **7.08** |
+| 0.80+ | 17 | 6.89 |
+
+Calibration segment: tangential fraction **0.14**, mean score 0.69. Junction:
+tangential fraction **0.60**, mean score 6.13. Its movers are vehicles ahead on
+the same road, moving almost purely radially, and depth-residual forecasting is
+structurally blind to that. The flow baseline shares the blind spot — epipolar
+lines radiate from the focus of expansion, so radial motion slides along its own
+epipolar line.
+
+These are not labelling errors: residual speed is 0.57 m/frame against 0.02 for
+parked cars, and the ego-fit residual does not grow with range (0.018 at 0–20 m,
+0.024 at 50–80 m).
+
+### 3. Full field of view does not work
+
+The 224×448 centre crop discards 40 % of KITTI's horizontal FOV. Recovering it
+(224×742, both exact multiples of the patch size) brings 11 more moving instances
+into view, and **objects newly visible in the periphery hit 73.7 % recall** — far
+above the 51.7 % average, because vehicles entering from the side are strongly
+tangential.
+
+But central precision collapses:
+
+| | moving visible | recall | precision | parked FP |
 |---|---|---|---|---|
-| original — IoU tracker, threshold 4 | 27.6 % | 26.5 % | 4.6 % | 0.270 |
-| + centroid-gated tracker only | 46.6 % | 19.0 % | 14.6 % | 0.270 |
-| + threshold 8 only, old tracker | 13.8 % | 42.1 % | 0.7 % | 0.208 |
-| **both** | **34.5 %** | **34.3 %** | **2.8 %** | **0.344** |
+| 224×448 crop | 58 | 51.7 % | **29.1 %** | 6.2 % |
+| 224×742 full FOV | 69 | 44.9 % | **6.9 %** | 25.0 % |
 
-Pure IoU association fails on objects that move further than their own width
-between frames — the fastest, most hazardous ones — so the persistence filter
-deleted exactly what mattered. Fixing that alone just slides along the curve
-(same F1). Raising the threshold alone starves recall. Together they are a strict
-Pareto improvement on all three axes, **+27 % relative F1**.
-
-### An idea that did not work
-
-Since box-mean surprise separates moving from parked at AUC 0.813, scoring
-sliding windows that way should make a better detector. It does not: multi-scale
-window scoring tops out at **F1 0.206 against the blob chain's 0.344**, worse at
-every matched false-alarm rate.
-
-The flaw is that the AUC was measured on *ground-truth* boxes. Given the box,
-the mean inside it discriminates well; but a detector has to find the box, and
-box-mean is a bad objective for that — a mispredicted car is a compact intense
-patch, and averaging over a car-sized window divides it by an area that is
-mostly correct. Connected components adapt to the shape of the surprise, which
-matters more than scoring the region well. Kept in the tree as
-`--detector window` so the result is reproducible.
-
-![top moments](outputs/final/top_moments.png)
-
-At the junction (raw frames 370–388) the cars crossing the intersection get
-boxed and the parked car at the kerb does not. The remaining false positives are
-mostly road surface in the bottom corners, where forward warping has the most
-extreme parallax.
+I diagnosed this as unmodelled peripheral parallax and added a displacement term
+to the noise model — expected error scaling with how far content actually moved.
+**It changed nothing** (51.7/29.1 identical with and without). So that diagnosis
+was wrong. The likelier cause is that the robust median/MAD is computed
+per-frame, so adding 66 % more high-parallax area inflates the MAD and depresses
+z-scores everywhere; that needs per-region normalisation, which is not built.
+`--full-fov` exists and is documented as not working.
 
 ---
 
@@ -182,14 +305,34 @@ bump or the sun moves. All of that is *global* error. Expressing each pixel as
 "how many MADs above this frame's own typical error" divides it out: a jolt
 raises the median for every pixel at once and cancels, a pedestrian does not.
 
-**Depth-edge suppression.** The single biggest source of false alarms, and it is
-an artifact of forward warping rather than anything in the scene. Where depth
-jumps from 8 m to 40 m across one pixel, being off by a single pixel is a 400 %
-relative error that means nothing. Left alone it draws a bright outline around
-every object in the frame. Masking the morphological gradient of *log* depth
-took the synthetic static scene from 2.81 % of pixels flagged to 0.00 %, while
-leaving object interiors — where a genuinely mispredicted car lights up —
-untouched.
+**A noise model, not a mask.** The biggest source of false alarms is depth
+discontinuities, and it is an artifact of forward warping rather than anything in
+the scene: where depth jumps from 8 m to 40 m across one pixel, being off by a
+single pixel is a 400 % relative error that means nothing. The first version
+deleted a dilated band around every depth step. That works, and it also deletes
+most of a distant vehicle — a car at 40 m keeps only ~124 usable pixels, and a
+6 px masked ring takes the rest.
+
+So instead of asking "is this pixel trustworthy", `expected_residual_scale`
+predicts *how large a residual to expect here even if nothing moved*: a sub-pixel
+registration error δ at a place where depth changes by a fraction g per pixel
+produces about δ·g of relative residual, plus a confidence-scaled floor for
+VGGT's own depth noise, added in quadrature. Dividing by that gives a quantity
+which is ~1 wherever the static world holds — flat road, textured wall, *and* the
+silhouette of a parked car. Steep gradients stop being untrustworthy and become
+correctly discounted. Only true occlusion boundaries (>100 % depth change per
+pixel, undilated) are still dropped.
+
+That is the difference between a heuristic and a statistic, and it is worth 12
+points of recall on drive 0009 with large-object recall going 65 % → 91 %. It is
+not free: see the curve comparison above, where the old hard mask is still better
+at very tight false-alarm rates.
+
+**Normalised smoothing.** Ten lines, and the cheapest win in the repo. The score
+is smoothed before thresholding, but masked pixels hold zero, so a naive blur
+drags down exactly the pixels adjacent to a mask — which for a small object ringed
+by masked pixels means most of it. Blurring `score × valid` and `valid`
+separately and dividing fixes it. Worth 5 points of recall at flat precision.
 
 ---
 
@@ -262,6 +405,29 @@ Measured on the M5 Air: 3.3 s per 8-frame VGGT pass, **0.59 s per scored frame**
   obvious first attempt — mislabels every distant parked car as moving through
   every turn, because ego rotation induces apparent velocity that grows with
   range. That bug cost 10 points of apparent recall before it was found.
+
+
+**VGGT saw the target frame.** Worth being explicit about, because it sounds like
+a leak and is not quite one. Depth and pose come from a single VGGT pass over the
+whole 8-frame chunk, and VGGT's global attention means the depth assigned to
+frame *t−1* was computed with frame *t* in the window. The *forecast* uses only
+past frames — pose extrapolation from t−2 and t−1, warping t−1's depth — but the
+depth values it warps were produced by a network that had seen the future frame.
+This mirrors the protocol in VGGT-World's own evaluation, which likewise runs
+`part1` over the full window to obtain target tokens. VGGT is being used as a
+measuring instrument rather than a predictor, so the alternative — a separate pass
+per window — would cost 6× the compute and introduce a different arbitrary depth
+scale per frame, which is worse. But a strictly causal deployment would need
+either a causal backbone or per-window passes with scale alignment, and the
+numbers here would change.
+
+**One tuning drive, two held-out drives.** 31 held-out tracklets is not many, and
+the bootstrap CIs say so: [3.4, 22.0] % on pooled recall. Drives 0018, 0051, 0056
+and 0059 are downloading and would tighten this considerably.
+
+**Farneback, not RAFT.** The flow baseline uses the weakest respectable flow
+estimator. A RAFT-based residual would be a stronger opponent and has not been
+tried.
 
 ## Layout
 
