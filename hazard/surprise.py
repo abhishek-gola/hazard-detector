@@ -148,6 +148,7 @@ def compute_surprise(
     extreme_grad: float = 1.0,
     normalised_blur: bool = True,
     use_flow_term: bool = True,
+    local_norm: bool = False,
 ) -> SurpriseMap:
     """Compare a forecast against what VGGT actually measured.
 
@@ -220,8 +221,50 @@ def compute_surprise(
 
     return score_from_residual(
         residual, valid, smooth_sigma=smooth_sigma, threshold=threshold,
-        normalised_blur=normalised_blur,
+        normalised_blur=normalised_blur, local_norm=local_norm,
     )
+
+
+def _local_robust_stats(residual: np.ndarray, valid: np.ndarray,
+                        grid: tuple[int, int] = (4, 8),
+                        min_px: int = 150):
+    """Per-tile median and MAD, bilinearly upsampled to a smooth field.
+
+    The global version asks "how unusual is this pixel compared to the whole
+    frame", which is the right question only when the frame is statistically
+    homogeneous. It is not. For a forward-moving camera, parallax grows with
+    angular distance from the focus of expansion, so the periphery has an
+    inherently larger residual than the centre. Pooling them means the
+    periphery's noise inflates the frame's MAD and depresses z-scores
+    everywhere -- which is the leading explanation for why widening the field of
+    view destroyed precision.
+
+    Tiles with too few valid pixels fall back to the global statistics rather
+    than inventing a local one from a handful of samples.
+    """
+    gh, gw = grid
+    h, w = residual.shape
+    med_g = float(np.median(residual[valid])) if valid.any() else 0.0
+    mad_g = float(np.median(np.abs(residual[valid] - med_g))) if valid.any() else 0.0
+
+    med_t = np.full((gh, gw), med_g, np.float32)
+    mad_t = np.full((gh, gw), mad_g, np.float32)
+    ys = np.linspace(0, h, gh + 1).astype(int)
+    xs = np.linspace(0, w, gw + 1).astype(int)
+    for i in range(gh):
+        for j in range(gw):
+            r = residual[ys[i]:ys[i + 1], xs[j]:xs[j + 1]]
+            v = valid[ys[i]:ys[i + 1], xs[j]:xs[j + 1]]
+            if v.sum() < min_px:
+                continue
+            vals = r[v]
+            m = float(np.median(vals))
+            med_t[i, j] = m
+            mad_t[i, j] = float(np.median(np.abs(vals - m)))
+
+    med = cv2.resize(med_t, (w, h), interpolation=cv2.INTER_LINEAR)
+    mad = cv2.resize(mad_t, (w, h), interpolation=cv2.INTER_LINEAR)
+    return med, mad
 
 
 def score_from_residual(
@@ -231,6 +274,8 @@ def score_from_residual(
     smooth_sigma: float = 1.5,
     threshold: float = 4.0,
     normalised_blur: bool = True,
+    local_norm: bool = False,
+    local_grid: tuple[int, int] = (4, 8),
 ) -> SurpriseMap:
     """Robust per-frame normalisation, shared by every residual space.
 
@@ -250,9 +295,12 @@ def score_from_residual(
     vals = residual[valid]
     med = float(np.median(vals))
     mad = float(np.median(np.abs(vals - med)))
-    scale = 1.4826 * mad + 1e-6
 
-    score = (residual - med) / scale
+    if local_norm:
+        med_map, mad_map = _local_robust_stats(residual, valid, local_grid)
+        score = (residual - med_map) / (1.4826 * mad_map + 1e-6)
+    else:
+        score = (residual - med) / (1.4826 * mad + 1e-6)
     score[~valid] = 0.0
     score = np.clip(score, 0.0, None)
 

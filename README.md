@@ -450,28 +450,47 @@ The flow baseline shares the blind spot, incidentally — epipolar lines radiate
 from the focus of expansion, so radial motion slides along its own epipolar line.
 Neither method sees a car pulling away in your lane.
 
-### 3. Full field of view does not work
+### 3. Full field of view does not work, and I do not know why
 
-The 224×448 centre crop discards 40 % of KITTI's horizontal FOV. Recovering it
-(224×742, both exact multiples of the patch size) brings 11 more moving instances
-into view, and **objects newly visible in the periphery hit 73.7 % recall** — far
-above the 51.7 % average, because vehicles entering from the side are strongly
-tangential.
+*Produced by the local-norm comparison in this section's commit; run via
+`compute_surprise(..., local_norm=True)` on `cache/junction_fov`.*
 
-But central precision collapses:
+The 224×448 centre crop discards 40 % of KITTI's horizontal field of view.
+Recovering it (224×742, both exact multiples of the patch size) brings more
+moving objects into view and **objects newly visible in the periphery are found at
+73.7 %** — far above average, because vehicles entering from the side are strongly
+tangential. But precision collapses.
 
-| | moving visible | recall | precision | parked FP |
+Scored against KittiMoSeg on drive 0009, swept, with both hypotheses tested:
+
+| config | AP | best F1 | max recall | precision @ best F1 |
 |---|---|---|---|---|
-| 224×448 crop | 58 | 51.7 % | **29.1 %** | 6.2 % |
-| 224×742 full FOV | 69 | 44.9 % | **6.9 %** | 25.0 % |
+| 224×448 crop, global norm | **0.212** | **0.413** | 40.4 % | **45.6 %** |
+| 224×448 crop, per-region norm | 0.178 | 0.354 | 52.3 % | 33.3 % |
+| 224×742 full FOV, global norm | 0.092 | 0.242 | 45.8 % | 18.9 % |
+| 224×742 full FOV, per-region norm | 0.089 | 0.210 | 52.4 % | 15.3 % |
 
-I diagnosed this as unmodelled peripheral parallax and added a displacement term
-to the noise model — expected error scaling with how far content actually moved.
-**It changed nothing** (51.7/29.1 identical with and without). So that diagnosis
-was wrong. The likelier cause is that the robust median/MAD is computed
-per-frame, so adding 66 % more high-parallax area inflates the MAD and depresses
-z-scores everywhere; that needs per-region normalisation, which is not built.
-`--full-fov` exists and is documented as not working.
+**Two hypotheses, both mine, both wrong.**
+
+*First:* unmodelled peripheral parallax — a fractional pose error over a large
+displacement misplaces content proportionally, so the noise model should scale
+with how far each pixel actually moved. Implemented (`Forecast.flow`,
+`pose_rel_err` in `expected_residual_scale`). **Changed nothing** — identical
+numbers with and without at 224×448.
+
+*Second:* the robust median/MAD is computed per frame, so adding 66 % more
+high-parallax area inflates it and depresses z-scores everywhere. Fixed by tiling
+the frame into a 4×8 grid, computing median/MAD per tile over valid pixels, and
+bilinearly upsampling to a smooth field (`local_norm=True`). **Also wrong.** It
+does not rescue full FOV (AP 0.092 → 0.089) and it makes the *crop* worse
+(0.212 → 0.178). It raises max recall in both cases while wrecking precision,
+which is what you would expect if it is mostly amplifying the noise floor of
+quiet regions rather than correcting a real spatial bias.
+
+So full FOV fails for a reason I have not identified. Both options ship, both
+default off: `--full-fov` and `local_norm=True`. Naming a hypothesis and then
+leaving it untested was the weakest thing in this repo; it is now tested and I
+was wrong twice.
 
 ---
 
