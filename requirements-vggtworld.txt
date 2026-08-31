@@ -1,0 +1,9 @@
+# Extra deps for --forecaster vggtworld (the paper's learned flow-matching
+# model). Not needed for the rigid or identity forecasters.
+-r requirements.txt
+hydra-core>=1.3
+omegaconf>=2.3
+diffusers>=0.30
+einops>=0.8
+transformers>=4.40
+accelerate>=0.30

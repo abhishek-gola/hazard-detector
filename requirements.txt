@@ -1,0 +1,9 @@
+# Everything the detector needs on macOS / Apple Silicon.
+# Install torch from default PyPI -- do NOT use VGGT-World's requirements.txt,
+# whose first line pins a CUDA 12.8 wheel index.
+torch>=2.5
+torchvision>=0.20
+numpy>=1.26
+opencv-python>=4.9
+Pillow>=10.0
+safetensors>=0.4
