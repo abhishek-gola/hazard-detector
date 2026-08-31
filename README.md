@@ -49,12 +49,12 @@ headline finding of this project.
 number.** Any scalar recall figure here is a property of the traffic in the clip
 as much as of the method.
 
-### Held-out test — frozen config, run once
+### Held-out test — frozen config, run once per drive
 
 Everything (noise model, blur, threshold 8, tracker gate, blob rules) was chosen
-on drive 0009. Drives 0013 and 0014 were fetched afterwards and
+on drive 0009. Six further drives were fetched afterwards and
 `scripts/test_once.py` is the only thing ever run on them. No knob was touched
-after seeing this.
+after seeing any of this.
 
 Confidence intervals bootstrap over **tracklets**, not instances — one moving car
 contributes ~20 correlated frames, so resampling instances would give intervals
@@ -62,23 +62,52 @@ several times too narrow.
 
 | method | instances | tracklets | recall | 95 % CI | precision | parked FP |
 |---|---|---|---|---|---|---|
-| **depth residual** | 257 | 31 | **10.5 %** | [3.4, 22.0] | 19.9 % | 13.6 % |
-| flow residual | 257 | 31 | 1.6 % | [0.3, 3.8] | 1.6 % | 3.0 % |
+| **depth residual** | 1216 | 96 | **24.7 %** | [18.8, 30.4] | 24.5 % | 16.9 % |
+| flow residual | 1216 | 96 | 6.7 % | [4.1, 9.9] | 8.6 % | 7.5 % |
 
-Per drive: 0013 gives 22.8 % recall, 0014 gives 7.0 %. The CIs are wide because
-31 tracklets is not many — that is the honest width, not a presentation choice.
+Against 48.3 % on the tuning drive. The gap is real: **drive 0009's junction was
+favourable traffic**, and any single-clip number for this method is a property of
+the traffic as much as of the method. Per-drive recall ranges from 7.0 % to
+34.5 %.
 
-**Recall by apparent size, pooled held-out:**
+| drive | instances | recall | median tangential | median box area |
+|---|---|---|---|---|
+| 0013 | 57 | 22.8 % | 0.363 | 806 px² |
+| 0014 | 199 | **7.0 %** | 0.244 | **483 px²** |
+| 0018 | 45 | 11.1 % | 0.240 | 697 px² |
+| 0051 | 473 | **34.5 %** | 0.220 | 792 px² |
+| 0056 | 167 | 24.6 % | 0.216 | 1088 px² |
+| 0059 | 271 | 23.2 % | 0.223 | 650 px² |
+
+### What actually governs recall: apparent size
 
 | box area | n | recall | 95 % CI |
 |---|---|---|---|
-| < 600 px² | 135 | **0.0 %** | [0.0, 0.0] |
-| 600–2000 px² | 77 | 5.2 % | [0.0, 11.3] |
-| > 2000 px² | 45 | **51.1 %** | [29.2, 69.6] |
+| < 600 px² | 492 | 9.6 % | [5.2, 15.0] |
+| 600–2000 px² | 531 | 23.5 % | [15.8, 32.0] |
+| > 2000 px² | 193 | **66.3 %** | [55.7, 74.9] |
 
-Large objects generalise. Everything below ~2000 px² — which is more than half
-of all annotated moving vehicles — is essentially invisible. Drive 0009 looked
-good largely because its junction traffic is close, large and crossing.
+Cross-tabulated against tangential motion, to separate two correlated variables:
+
+| size | tangential < 0.25 m/frame | tangential ≥ 0.25 |
+|---|---|---|
+| < 600 px² | 10.5 % [5.4, 16.6] n=333 | 7.6 % [2.8, 14.2] n=158 |
+| 600–2k | 18.3 % [8.9, 33.3] n=278 | 29.2 % [20.7, 37.5] n=250 |
+| > 2k | 54.7 % [37.3, 71.4] n=53 | **70.7 %** [60.7, 78.5] n=140 |
+
+**Read down and the intervals separate cleanly; read across and they overlap.**
+Apparent size is the dominant driver. Tangential motion has a consistent
+positive effect in the two larger size bands but is not separable from noise at
+this sample size, and in the smallest band it slightly reverses.
+
+This corrects an earlier claim in this README. On drive 0009 alone the tangential
+effect looked dominant — mean box score rose 1.57 → 7.08 across tangential
+quartiles, a 4.5× spread — and that was written up as "recall tracks tangential
+motion, not size". With 1212 instances across six drives instead of 58 on one,
+that does not hold. Size dominates; tangential motion is real but secondary.
+The mechanism argument still stands (an object arriving on pixels the forecast
+assigned to background produces a much larger residual than one whose depth
+merely drifts), it simply is not the largest term.
 
 ### The baseline that decides whether VGGT earns its place
 
@@ -182,24 +211,30 @@ precision throughout the useful region, so it is off by default.
 Three, all measured, all reproducible. They cost real compute and they are the
 most informative part of the project.
 
-### 1. The small-object floor is in the signal, not the decision layer
+### 1. The small-object floor is real, but it is not a floor at zero
 
 The premise was that masking and blurring destroyed small objects before the
 detector saw them. Partly true — normalised blur and the noise model bought 12
-points of recall on drive 0009. But the calibration segment (frames 0–196,
-16 moving instances, median 422 px², median range 42.6 m) yields **0 % recall at
-every configuration and every threshold from 4 to 25**, and the pooled held-out
-< 600 px² bucket is **0/135**.
+points of recall on drive 0009, and large-object recall went 65 % → 91 %.
 
-So the floor is not fixable downstream. Box-level AUC on that segment is
-**0.476** — below chance. At ~40 m a vehicle's inter-frame depth change is inside
-VGGT's own depth noise, and no amount of thresholding recovers a signal that is
-not there.
+But drive 0009's calibration segment (frames 0–196, 16 moving instances, median
+422 px², median range 42.6 m) yields **0 % recall at every configuration and
+every threshold from 4 to 25**, with box-level AUC **0.476** — below chance. No
+amount of thresholding recovers a signal that is not there.
 
-### 2. Recall tracks tangential motion, not size alone
+An earlier version of this section generalised that to "0 out of 135 instances
+under 600 px²", from two held-out drives. **That was a small-sample artifact.**
+With 492 such instances across six drives the figure is **9.6 % [5.2, 15.0]** —
+poor, and far below the 66.3 % for objects over 2000 px², but not zero. The
+honest statement is that recall degrades steeply with apparent size and that
+particular clips at ~40 m produce nothing.
 
-Why the calibration segment produces nothing, when junction objects at the same
-range are detected fine (AUC 0.828):
+### 2. Tangential motion is the mechanism but not the dominant term
+
+Depth-residual forecasting should respond to tangential motion, where an object
+arrives on pixels the forecast had assigned to background, and be nearly blind to
+radial motion, where the object holds its pixels and only its depth drifts. On
+drive 0009 that showed up strongly — mean box score by tangential quartile:
 
 | tangential residual speed | n | mean score |
 |---|---|---|
@@ -208,16 +243,20 @@ range are detected fine (AUC 0.828):
 | 0.40–0.80 | 27 | **7.08** |
 | 0.80+ | 17 | 6.89 |
 
-Calibration segment: tangential fraction **0.14**, mean score 0.69. Junction:
-tangential fraction **0.60**, mean score 6.13. Its movers are vehicles ahead on
-the same road, moving almost purely radially, and depth-residual forecasting is
-structurally blind to that. The flow baseline shares the blind spot — epipolar
-lines radiate from the focus of expansion, so radial motion slides along its own
-epipolar line.
+Its calibration segment has tangential fraction 0.14 and mean score 0.69; its
+junction has 0.60 and 6.13. Those movers are vehicles ahead on the same road,
+moving almost purely radially, and they produce nothing. Not labelling errors:
+residual speed is 0.57 m/frame against 0.02 for parked cars, and the ego-fit
+residual does not grow with range (0.018 at 0–20 m, 0.024 at 50–80 m).
 
-These are not labelling errors: residual speed is 0.57 m/frame against 0.02 for
-parked cars, and the ego-fit residual does not grow with range (0.018 at 0–20 m,
-0.024 at 50–80 m).
+**But it does not survive as the primary effect.** Cross-tabulated against size
+over 1212 held-out instances, the tangential effect is not separable from noise
+within size bands (see the table above), while the size effect is unambiguous.
+The mechanism is right; its explanatory power was overstated from a single clip.
+
+The flow baseline shares the blind spot, incidentally — epipolar lines radiate
+from the focus of expansion, so radial motion slides along its own epipolar line.
+Neither method sees a car pulling away in your lane.
 
 ### 3. Full field of view does not work
 
@@ -421,9 +460,12 @@ scale per frame, which is worse. But a strictly causal deployment would need
 either a causal backbone or per-window passes with scale alignment, and the
 numbers here would change.
 
-**One tuning drive, two held-out drives.** 31 held-out tracklets is not many, and
-the bootstrap CIs say so: [3.4, 22.0] % on pooled recall. Drives 0018, 0051, 0056
-and 0059 are downloading and would tighten this considerably.
+**One tuning drive, six held-out drives.** 96 held-out tracklets over 1216
+instances gives [18.8, 30.4] % on pooled recall — usable, but per-drive recall
+still ranges 7.0–34.5 %, so clip selection matters more than any remaining
+parameter choice. All seven drives are from the same recording session
+(2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
+to weather, night, or another sensor.
 
 **Farneback, not RAFT.** The flow baseline uses the weakest respectable flow
 estimator. A RAFT-based residual would be a stronger opponent and has not been

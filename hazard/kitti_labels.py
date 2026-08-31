@@ -238,3 +238,60 @@ def summarise(tracklets: list[Tracklet]) -> str:
         span = ", ".join(f"{a}-{b}" for a, b in runs if b - a >= 2)
         lines.append(f"moving-object frame ranges: {span or '(none longer than 2 frames)'}")
     return "\n".join(lines)
+
+
+def residual_velocity(tracklets: list[Tracklet]) -> dict[tuple[int, int], tuple[float, float]]:
+    """(tracklet id, frame) -> (radial, tangential) residual speed in m/frame.
+
+    Reuses the same trimmed rigid-field ego fit that `mark_moving` uses, then
+    splits each object's leftover velocity into the component along the line of
+    sight from the ego vehicle and the component across it.
+
+    The split matters more than any other covariate measured here. Depth-residual
+    forecasting responds to tangential motion, where an object arrives at pixels
+    the forecast had assigned to background, and is nearly blind to radial
+    motion, where the object stays on the same pixels and only its depth changes
+    slightly. Reporting recall without conditioning on this hides the mechanism.
+    """
+    vel: dict[int, np.ndarray] = {}
+    for i, t in enumerate(tracklets):
+        v = np.zeros_like(t.positions)
+        if len(t.positions) > 1:
+            v[1:] = np.diff(t.positions, axis=0)
+            v[0] = v[1]
+        vel[i] = v
+
+    frames = [f for t in tracklets for f in t.frames]
+    if not frames:
+        return {}
+
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    for f in range(min(frames), max(frames) + 1):
+        idx = [i for i, t in enumerate(tracklets)
+               if t.first_frame <= f < t.first_frame + len(t.positions)]
+        if len(idx) < 3:
+            continue
+        pos = np.stack([tracklets[i].positions[f - tracklets[i].first_frame] for i in idx])
+        vv = np.stack([vel[i][f - tracklets[i].first_frame] for i in idx])
+        fit = _fit_rigid_2d(pos[:, :2], vv[:, :2])
+        if fit is None:
+            continue
+        sol = fit[0]
+        res = _rigid_residuals(pos[:, :2], vv[:, :2], sol)
+        keep = res <= np.quantile(res, 0.65)
+        if keep.sum() >= 3:
+            refit = _fit_rigid_2d(pos[keep, :2], vv[keep, :2])
+            if refit is not None:
+                sol = refit[0]
+        for k, i in enumerate(idx):
+            p = pos[k, :2]
+            pred = np.array([sol[0] - sol[2] * p[1], sol[1] + sol[2] * p[0]])
+            r = vv[k, :2] - pred
+            n = np.linalg.norm(p)
+            if n < 1e-6:
+                continue
+            u = p / n
+            radial = abs(float(r @ u))
+            tang = float(np.linalg.norm(r - (r @ u) * u))
+            out[(id(tracklets[i]), int(f))] = (radial, tang)
+    return out

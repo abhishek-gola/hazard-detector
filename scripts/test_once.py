@@ -32,7 +32,8 @@ from hazard.baseline_flow import flow_surprise  # noqa: E402
 from hazard.detect import BlobTracker, extract_blobs  # noqa: E402
 from hazard.forecast import ForecastContext, RigidFlowForecaster  # noqa: E402
 from hazard.kitti_calib import KittiCalib, project_box  # noqa: E402
-from hazard.kitti_labels import DYNAMIC_TYPES, mark_moving, parse_tracklets  # noqa: E402
+from hazard.kitti_labels import (DYNAMIC_TYPES, mark_moving,  # noqa: E402
+                                 parse_tracklets, residual_velocity)
 from hazard.surprise import compute_surprise  # noqa: E402
 
 # FROZEN. Chosen on drive 0009 before any held-out drive was downloaded.
@@ -56,6 +57,7 @@ def _ov(det, obj) -> float:
 def run_drive(cache: Path, drive: Path, calib: KittiCalib, method: str):
     """-> list of per-instance records, plus detection bookkeeping."""
     tracklets = mark_moving(parse_tracklets(drive / "tracklet_labels.xml"))
+    resid_vel = residual_velocity(tracklets)
     man = json.loads((cache / "manifest.json").read_text())
     stems, ctx = man["frames"], man["ctx"]
     fc = RigidFlowForecaster()
@@ -101,8 +103,10 @@ def run_drive(cache: Path, drive: Path, calib: KittiCalib, method: str):
         for b, mv, tid, otype in objs:
             hit = any(_ov(d.box, b) >= HIT_FRAC for d in dets)
             if mv:
+                rv = resid_vel.get((tid, raw), (float("nan"), float("nan")))
                 records.append({"tracklet": tid, "hit": bool(hit),
-                                "area": b[2] * b[3], "type": otype})
+                                "area": b[2] * b[3], "type": otype,
+                                "radial": rv[0], "tangential": rv[1]})
             else:
                 n_park += 1
                 n_pfp += hit
@@ -190,6 +194,22 @@ def main() -> int:
               f"[{100 * lo:>5.1f}, {100 * hi:>5.1f}]% "
               f"{100 * bk['d_mov'] / max(bk['n_det'], 1):>6.1f}% "
               f"{100 * bk['n_pfp'] / max(bk['n_park'], 1):>6.1f}%")
+
+    if "depth" in pooled and pooled["depth"][0]:
+        rec = pooled["depth"][0]
+        print("\nrecall by TANGENTIAL residual speed (depth method, pooled)")
+        print("  the mechanism: tangential motion moves an object onto pixels the")
+        print("  forecast had assigned to background; radial motion barely shifts depth")
+        for lo_t, hi_t, nm in [(0, 0.15, "0.00-0.15"), (0.15, 0.40, "0.15-0.40"),
+                               (0.40, 0.80, "0.40-0.80"), (0.80, 1e9, "0.80+")]:
+            sel = [r for r in rec
+                   if not np.isnan(r["tangential"]) and lo_t <= r["tangential"] < hi_t]
+            if not sel:
+                continue
+            pt, lo, hi = bootstrap_recall(sel)
+            med_a = np.median([r["area"] for r in sel])
+            print(f"  {nm:<11} m/frame  n={len(sel):>4}  recall {100 * pt:>5.1f}% "
+                  f"[{100 * lo:>5.1f}, {100 * hi:>5.1f}]%   median area {med_a:>6.0f} px2")
 
     # recall by apparent size, pooled, depth method only
     if "depth" in pooled and pooled["depth"][0]:
