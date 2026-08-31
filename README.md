@@ -133,28 +133,36 @@ Per drive, and the spread is the real story:
 | 0014 | 106 | 315 | **7.0 %** | 32.6 % | 3.2 % |
 | 0018 | 108 | 307 | 36.2 % | **18.3 %** | 12.6 % |
 
-### mIoU — the metric the literature actually reports
+### mIoU — against the actual published numbers
 
-| | |
-|---|---|
-| frames scored | 365 |
-| **IoU of the moving class** | **7.38 %** [4.50, 10.42] |
+| | Precision | Recall | F-score | **moving-class IoU** |
+|---|---|---|---|---|
+| MODNet (RGB+OF), separate — *supervised* | 44.34 | 69.84 | 54.25 | **37.22** |
+| MODNet (RGB+OF), joint — *supervised* | 56.18 | 70.32 | 62.46 | **45.41** |
+| **this method — unsupervised, zero training** | — | — | — | **7.38** [4.50, 10.42] |
 
-This is the honest comparison and it is not flattering. Supervised MODNet-era
-work reports mIoU an order of magnitude higher on this dataset. Two reasons, one
-legitimate and one not:
+MODNet numbers are Table II of
+[arXiv:1709.04821](https://arxiv.org/abs/1709.04821), motion segmentation on
+KITTI MOD, input resolution 1048×384. Mine is 365 frames over four drives of
+Rashed's 12,919-frame extension at 224×448.
 
-- *Legitimate:* this method is unsupervised and trains nothing, while those
-  numbers come from networks trained on these labels. Different problem.
-- *Not legitimate as an excuse:* the surprise mask covers only the part of an
-  object whose depth was mispredicted — a flank, a bumper — not its silhouette.
-  As a **detector** (does a box land on the moving thing) it reaches 24.6 % recall
-  at 26.4 % precision. As a **segmenter** it is poor, and mIoU measures
-  segmentation.
+**So the gap is 5–6×, not the "order of magnitude" an earlier draft of this
+README guessed at.** Three things make the comparison indicative rather than
+like-for-like, and only the first is in my favour:
 
-If the goal were mIoU, the right move would be to grow each detection to an
-object mask — the surprise blob as a seed for a segmentation step — which is not
-built.
+- MODNet is **supervised on this task**, trained on these labels. This method
+  trains nothing and has never seen a motion label.
+- MODNet runs at 1048×384 — **four times the pixels**. At 224×448 a car at 40 m
+  is a few hundred pixels, and mask IoU punishes low resolution hard.
+- **It is not their test split.** I scored four drives chosen for traffic density,
+  not KITTI MOD's evaluation split, so this is not a benchmark result.
+
+The structural reason for the gap is not resolution or supervision though: the
+surprise mask covers the *mispredicted part* of an object — a flank, a bumper —
+not its silhouette. As a **detector** (does a box land on the moving thing) this
+reaches 24.6 % recall at 26.4 % precision unsupervised. As a **segmenter** it is
+5–6× off supervised work, and mIoU measures segmentation. Closing that would mean
+using the blob as a seed for a segmentation step, which is not built.
 
 ### What actually governs recall: apparent size
 
@@ -608,8 +616,9 @@ parameter choice. All seven drives are from the same recording session
 (2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
 to weather, night, or another sensor.
 
-**mIoU is an order of magnitude below supervised work.** 7.4 % against
-MODNet-era numbers on the same dataset. The detector-level figures are more
+**mIoU is 5-6x below supervised work.** 7.38 % against MODNet's published
+37.22-45.41 % moving-class IoU, at a quarter of their input resolution and with
+no training -- but also not on their test split, so it is indicative only. The detector-level figures are more
 respectable, but if the task is stated as motion *segmentation* this method is
 not competitive, and the gap is structural: it marks the mispredicted part of an
 object, not the object.

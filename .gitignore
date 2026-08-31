@@ -19,3 +19,7 @@ __pycache__/
 .venv/
 .DS_Store
 .tools/
+
+# KittiMoSeg: archives fetched via gdown, labels extracted from them
+data/kittimoseg/
+data/moseg/
