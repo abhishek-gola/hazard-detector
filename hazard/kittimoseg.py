@@ -12,10 +12,16 @@ Two things it buys that the derived labels cannot:
      become comparable to the literature instead of to nothing.
   2. **38 drives** instead of the 7 with usable tracklets.
 
-One thing it does not buy: escape from a single recording session. Every archive
-in the release is `2011_09_26`, the same afternoon KITTI publishes tracklets for.
-That turns out to be a property of the field's standard benchmark for this task,
-not just of the shortcut taken here.
+Two things it does not buy. It does not escape a single recording session --
+every archive in the release is `2011_09_26`, the same afternoon KITTI publishes
+tracklets for -- and **it ships no train/test split**. The only documentation is
+`Data_representation.docx`, which covers the file format and nothing else. So
+MODNet's Table II figures cannot be matched split-for-split from this release;
+its numbers are on the original, smaller KITTI MOD (six raw sequences plus KITTI
+scene flow), which is not what is distributed here.
+
+Verified on load: 38 drives, **12,919 labelled frames**, exactly the count the
+release claims.
 
 Layout inside each per-drive `.7z`:
 
@@ -23,7 +29,10 @@ Layout inside each per-drive `.7z`:
     np_array_moving_Output/*.npz         per-instance moving masks, (H, W, k)
     np_array_All_classes_Output/*.npz    one-hot over 7 classes, (H, W, 7)
     Text_data_Output/NNNNNNNNNN.txt      one line per object:
-                                           track_id moving y0 x0 y1 x1 class
+                                           instance_id moving y0 x0 y1 x1 class
+                                         (field order per Data_representation.docx;
+                                          the y0 x0 y1 x1 order was additionally
+                                          confirmed against binary_img_Output)
     rgb_img_Output/*.jpg                 the frame, for reference
 
 Everything is at 750x2484 -- exactly 2x KITTI's native 375x1242 -- so every
@@ -41,10 +50,13 @@ import numpy as np
 SCALE = 2.0  # annotations are at 2x KITTI native resolution
 NATIVE_HW = (375, 1242)
 
-# class ids seen in Text_data_Output; the release documents five object classes
-# plus background, and id 1 dominates (vehicles).
-CLASS_NAMES = {1: "car", 2: "pedestrian", 3: "bicycle", 4: "truck",
-               5: "bus", 6: "misc", 7: "other"}
+# Class ids, verbatim from the release's own Data_representation.docx:
+#   1 Car  2 Van  3 Truck  4 Pedestrian  5 Sitter  6 Cyclist  7 Tram  8 Misc
+# An earlier version of this file guessed at this mapping and had classes 2-8
+# wrong. It did not affect any box or mask metric, since nothing here filters by
+# class, but it would have mislabelled every per-class breakdown.
+CLASS_NAMES = {1: "Car", 2: "Van", 3: "Truck", 4: "Pedestrian",
+               5: "Sitter", 6: "Cyclist", 7: "Tram", 8: "Misc"}
 
 WANT_DIRS = ("binary_img_Output", "Text_data_Output")
 
