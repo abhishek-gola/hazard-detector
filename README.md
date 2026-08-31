@@ -64,29 +64,30 @@ motion labels, and mIoU.
 `hazard/kitti_labels.py` decides which tracklets move by fitting a 2D rigid
 velocity field to the tracklets themselves and refitting on the quietest 65 %.
 KittiMoSeg decides the same thing from GPS/IMU odometry. Matching their object
-sets by IoU over four drives, 1,436 matched objects:
+sets by IoU across seven drives, **3,702 matched objects**:
 
 | | |
 |---|---|
-| motion-flag agreement | 60.4 % |
-| derived "moving" that KittiMoSeg also calls moving (**precision**) | **90.6 %** (326/360) |
-| KittiMoSeg "moving" that the derived GT finds (**recall**) | **37.9 %** (326/861) |
+| motion-flag agreement | 75.3 % |
+| derived "moving" that KittiMoSeg also calls moving (**precision**) | **93.6 %** (1192/1274) |
+| KittiMoSeg "moving" that the derived GT finds (**recall**) | **58.9 %** (1192/2024) |
 
-**The rigid-field fit was sound but the threshold was far too conservative.** When
-it says an object moves it is right 90.6 % of the time, so the method works. But
-it finds only 37.9 % of the moving objects, because `speed_thresh = 0.45 m/frame`
-(~16 km/h) was chosen to make the labels trustworthy — the docstring says
-"precision matters more than coverage" — and that silently discarded every slow
-mover.
+**The rigid-field fit was sound; the threshold was too conservative.** When it
+says an object moves it is right 93.6 % of the time, so substituting a rigid-field
+fit for GPS/IMU odometry works. But it finds only 58.9 % of moving objects,
+because `speed_thresh = 0.45 m/frame` (~16 km/h) was chosen to make labels
+trustworthy — the docstring says "precision matters more than coverage" — which
+silently discarded slower movers.
 
-**That biased earlier results in two directions at once**, and both are
-corrected below:
+**That biased earlier results in two directions at once**, and both are corrected
+below:
 
-- Recall was measured against a label set containing only the *faster* 38 % of
-  movers, which are the easier ones. Recall was flattered.
-- Every detection on one of the missing 62 % counted as a false alarm, and worse,
-  counted as *flagging a parked car*. The 16.9 % "parked false-flag rate" was
-  mostly my labels calling moving cars parked. Against KittiMoSeg it is **3.1 %**.
+- Recall was measured against a label set holding only the faster ~59 % of movers,
+  which are the easier ones.
+- Every detection on one of the missing 41 % counted as a false alarm, and
+  specifically as *flagging a parked car*. The 16.9 % "parked false-flag rate"
+  was largely my labels calling moving cars parked. Against KittiMoSeg it is
+  **4.9 %**.
 
 This is also what the false-positive contact sheet was showing: 56 % of unmatched
 detections had a visible vehicle in them. They were real movers the labels missed.
@@ -109,22 +110,22 @@ as much as of the method.
 ### Primary results: scored against KittiMoSeg
 
 Frozen config (noise model, normalised blur, threshold 8, tracker gate, blob
-rules), all chosen on drive 0009 before any other drive was fetched. Four drives
-with both cached geometry and KittiMoSeg labels; 861 moving instances.
+rules), all chosen on drive 0009 before any other drive was fetched. Seven drives,
+689 frames, **2,024 moving instances**.
 
 | | vs KittiMoSeg | vs self-derived labels |
 |---|---|---|
-| moving instances | **861** | 1216 (6 drives) |
-| recall | **24.6 %** [17.1, 33.3] | 24.7 % [18.8, 30.4] |
-| precision | **26.4 %** | 24.5 % |
-| static-object false-flag rate | **3.1 %** (18/582) | 16.9 % |
+| moving instances | **2024** | 1216 |
+| recall | **28.7 %** [23.3, 34.5] | 24.7 % [18.8, 30.4] |
+| precision | **43.3 %** | 24.5 % |
+| static-object false-flag rate | **4.9 %** (83/1707) | 16.9 % |
 
-Recall lands in the same place by coincidence — the real label set is both larger
-and harder. The number that moves is the false-alarm rate: **3.1 % against real
-labels, not 16.9 %**, because most of what looked like flagging parked cars was
-flagging cars my own labels had wrongly called parked.
+**Against real labels the detector is considerably better than my own labels
+suggested** — precision 43.3 % rather than 24.5 %, and a 4.9 % false-alarm rate
+rather than 16.9 %. Both differences are the same artifact: my labels omitted 41 %
+of movers, so detections on them were scored as false alarms against parked cars.
 
-Per drive, and the spread is the real story:
+Per drive, and the spread is the real story — precision ranges 18 % to 83 %:
 
 | drive | frames | instances | recall | precision | mask IoU |
 |---|---|---|---|---|---|
@@ -132,6 +133,9 @@ Per drive, and the spread is the real story:
 | 0013 | 56 | 88 | 35.2 % | 55.3 % | 11.7 % |
 | 0014 | 106 | 315 | **7.0 %** | 32.6 % | 3.2 % |
 | 0018 | 108 | 307 | 36.2 % | **18.3 %** | 12.6 % |
+| 0051 | 108 | 634 | 37.5 % | **82.5 %** | **24.8 %** |
+| 0056 | 108 | 233 | 26.6 % | 49.2 % | 16.8 % |
+| 0059 | 108 | 296 | 23.0 % | 56.3 % | 12.9 % |
 
 ### mIoU — against the actual published numbers
 
@@ -139,14 +143,14 @@ Per drive, and the spread is the real story:
 |---|---|---|---|---|
 | MODNet (RGB+OF), separate — *supervised* | 44.34 | 69.84 | 54.25 | **37.22** |
 | MODNet (RGB+OF), joint — *supervised* | 56.18 | 70.32 | 62.46 | **45.41** |
-| **this method — unsupervised, zero training** | — | — | — | **7.38** [4.50, 10.42] |
+| **this method — unsupervised, zero training** | — | — | — | **12.45** [9.59, 15.48] |
 
 MODNet numbers are Table II of
 [arXiv:1709.04821](https://arxiv.org/abs/1709.04821), motion segmentation on
-KITTI MOD, input resolution 1048×384. Mine is 365 frames over four drives of
+KITTI MOD, input resolution 1048×384. Mine is 689 frames over seven drives of
 Rashed's 12,919-frame extension at 224×448.
 
-**So the gap is 5–6×, not the "order of magnitude" an earlier draft of this
+**So the gap is 3–3.6×, not the "order of magnitude" an earlier draft of this
 README guessed at.** Three things make the comparison indicative rather than
 like-for-like, and only the first is in my favour:
 
@@ -616,7 +620,7 @@ parameter choice. All seven drives are from the same recording session
 (2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
 to weather, night, or another sensor.
 
-**mIoU is 5-6x below supervised work.** 7.38 % against MODNet's published
+**mIoU is 3-3.6x below supervised work.** 12.45 % against MODNet's published
 37.22-45.41 % moving-class IoU, at a quarter of their input resolution and with
 no training -- but also not on their test split, so it is indicative only. The detector-level figures are more
 respectable, but if the task is stated as motion *segmentation* this method is
