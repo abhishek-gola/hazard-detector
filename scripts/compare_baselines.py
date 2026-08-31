@@ -71,7 +71,8 @@ def maps_for(cache: Path, method: str, threshold: float):
                 sm = compute_surprise(f, geom, local, threshold=threshold)
             else:
                 sm = flow_surprise(images_u8[local - 1], images_u8[local],
-                                   threshold=threshold)
+                                   threshold=threshold, normalise=False,
+                                   backend="raft" if method == "raft" else "farneback")
             out[stems[g]] = sm
     return out, time.time() - t0
 
@@ -156,7 +157,7 @@ def main() -> int:
     cache = Path(args.cache)
 
     results = {}
-    for method in ("depth", "flow"):
+    for method in ("depth", "flow", "raft"):
         # The map only depends on threshold through peak/area bookkeeping, so
         # build it once and re-detect at each threshold.
         maps, secs = maps_for(cache, method, grid[0])

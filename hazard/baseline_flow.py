@@ -1,9 +1,20 @@
 """The baseline that decides whether the 5 GB transformer is earning its place.
 
-Classical independent-motion detection, and it predates all of this by decades:
-compute dense optical flow, fit the ego-motion that a rigid scene would produce,
-and flag the flow that does not fit. No depth, no foundation model, no weights
-at all -- Farneback and a RANSAC fundamental matrix, both in OpenCV.
+Independent-motion detection without depth: compute dense optical flow, fit the
+ego-motion that a rigid scene would produce, and flag the flow that does not fit.
+
+Two flow backends, because the choice decides whether the comparison is worth
+anything.
+
+  farneback  Classical, no weights, pure OpenCV. Predates all of this by
+             decades and is the "does a foundation model earn its place" test.
+
+  raft       RAFT-large with torchvision's `C_T_SKHT_K` weights -- Chairs,
+             Things, then Sintel + *KITTI* + HD1K. A modern learned estimator
+             fine-tuned on this exact domain. This is the strong opponent, and
+             reporting only Farneback would be choosing a weak one: "beats the
+             weakest respectable flow method" is a much smaller claim than the
+             AP table makes it look, and it is the first thing anyone attacks.
 
 The ego model is the fundamental matrix rather than a homography. A homography
 only describes a planar scene or a purely rotating camera, and a car driving
@@ -58,6 +69,40 @@ def _texture_mask(gray: np.ndarray, percentile: float = 25.0) -> np.ndarray:
     return energy >= np.percentile(energy, percentile)
 
 
+_RAFT_CACHE: dict = {}
+
+
+def _raft_flow(img_prev: np.ndarray, img_cur: np.ndarray) -> np.ndarray:
+    """Dense flow from RAFT-large, KITTI-finetuned. -> (H, W, 2) float32."""
+    import torch
+    from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
+
+    from .device import pick_device
+
+    if "model" not in _RAFT_CACHE:
+        device = pick_device()
+        weights = Raft_Large_Weights.C_T_SKHT_K_V2
+        model = raft_large(weights=weights, progress=False).to(device).eval()
+        for q in model.parameters():
+            q.requires_grad_(False)
+        _RAFT_CACHE.update(model=model, device=device)
+        n = sum(q.numel() for q in model.parameters())
+        print(f"[raft] raft_large {weights.name}, {n / 1e6:.1f}M params on {device.type}")
+
+    model, device = _RAFT_CACHE["model"], _RAFT_CACHE["device"]
+
+    def prep(a):
+        t = torch.from_numpy(np.ascontiguousarray(a)).permute(2, 0, 1).float()
+        if t.max() > 1.5:
+            t = t / 255.0
+        return (t * 2.0 - 1.0).unsqueeze(0).to(device)  # RAFT wants [-1, 1]
+
+    # RAFT needs both dimensions divisible by 8; 224x448 already is.
+    with torch.no_grad():
+        out = model(prep(img_prev), prep(img_cur))
+    return out[-1][0].permute(1, 2, 0).float().cpu().numpy()
+
+
 def _sampson(F: np.ndarray, p0: np.ndarray, p1: np.ndarray) -> np.ndarray:
     """Sampson distance to the epipolar constraint, per correspondence."""
     n = len(p0)
@@ -79,6 +124,7 @@ def flow_residual(
     sample_stride: int = 4,
     border: int = 8,
     normalise: bool = True,
+    backend: str = "farneback",
 ) -> tuple[np.ndarray, np.ndarray]:
     """-> (residual, valid). Sampson error, optionally range-normalised.
 
@@ -96,7 +142,12 @@ def flow_residual(
     g0, g1 = _gray(img_prev), _gray(img_cur)
     h, w = g0.shape
 
-    flow = cv2.calcOpticalFlowFarneback(g0, g1, None, **_FARNEBACK)
+    if backend == "raft":
+        flow = _raft_flow(img_prev, img_cur)
+    elif backend == "farneback":
+        flow = cv2.calcOpticalFlowFarneback(g0, g1, None, **_FARNEBACK)
+    else:
+        raise ValueError(f"unknown flow backend {backend!r}")
 
     vv, uu = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
     p0 = np.stack([uu.ravel(), vv.ravel()], axis=1).astype(np.float32)

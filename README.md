@@ -36,6 +36,54 @@ to what you actually mean by "hazard" than "there is a car here".
 
 ---
 
+## Related work, and why the ground truth here is self-derived
+
+This needs saying up front, because it is the main limitation of every number
+below.
+
+**A labelled dataset for exactly this task already exists.** KittiMoSeg
+([Siam et al., MODNet, arXiv:1709.04821](https://arxiv.org/abs/1709.04821))
+provides moving/static ground truth on KITTI raw — 1,300 images originally,
+extended ~10× by Hazem Rashed to **12,919 images** across KITTI raw sequences.
+[KITTI InstanceMotSeg](https://arxiv.org/abs/2008.07008) adds instance-level
+motion annotation over 12.9K samples for five classes, with motion estimated in
+3D world coordinates. Both are at
+[sites.google.com/view/instancemotseg](https://sites.google.com/view/instancemotseg/).
+
+**I built my own ground truth instead, and that was the wrong call.** Worse, the
+method I derived independently — annotated 3D boxes, plus an ego-motion estimate,
+plus association across frames to separate moving from static — is essentially
+KittiMoSeg's method. The one novel piece is *how* ego motion is estimated:
+KittiMoSeg uses GPS/IMU odometry, whereas `hazard/kitti_labels.py` fits a 2D
+rigid velocity field to the tracklets themselves and refits on the quietest 65 %.
+That was invented to work around not having the `oxts` data, and it does work,
+but solving a solved problem is not a contribution.
+
+**What it costs.** Three things, and the first is the serious one:
+
+1. **The numbers here are comparable to nothing.** Published work on this task
+   reports mIoU on KittiMoSeg's pixel masks. This reports box-level recall and
+   precision on self-derived box labels. Neither the metric nor the ground truth
+   matches, so "24.7 % recall" cannot be placed against any MODNet-era result —
+   and those were reporting considerably better performance on moving-object
+   segmentation back in 2017.
+2. **The evaluation is confined to one recording session.** KITTI raw publishes
+   tracklets *only* for `2011_09_26` — every other date returns 404 — so
+   tracklet-derived GT cannot leave that afternoon. KittiMoSeg spans more of KITTI
+   raw and would lift that ceiling directly.
+3. **My labels are incomplete in a way that biases against me.** See the false
+   positive analysis below: 56 % of unmatched detections have a visible vehicle
+   in them.
+
+**Migration path**, concretely: KittiMoSeg's extension ships motion masks with
+RGB taken from KITTI raw, so it drops into `hazard/kitti_labels.py` as an
+alternative label source keyed by drive and frame, and `project_box` becomes
+unnecessary since the masks are already in image space. Reporting mIoU alongside
+box recall would then make these results directly comparable to the literature.
+That is the single highest-value change left in this project, and it is not done.
+
+---
+
 ## Results
 
 Two things to read first, because they change how the rest should be taken.
@@ -109,41 +157,49 @@ The mechanism argument still stands (an object arriving on pixels the forecast
 assigned to background produces a much larger residual than one whose depth
 merely drifts), it simply is not the largest term.
 
-### The baseline that decides whether VGGT earns its place
+### Baselines: classical flow, and a modern one
 
-`identity` was a straw man. The real question is whether a 1.3 B-parameter
-transformer beats Farnebäck plus a RANSAC fundamental matrix — dense flow, fit
-the ego-motion a rigid scene would produce, flag the Sampson error that does not
-fit. No depth, no weights. Both methods share the same normalisation, blob
+`identity` was a straw man. The real question is whether a 1.16 B-parameter
+transformer beats a flow-residual method: compute dense optical flow, fit the
+ego-motion a rigid scene would produce with a RANSAC fundamental matrix, and flag
+the Sampson error that does not fit. Both share this method's normalisation, blob
 extractor, tracker and threshold grid, so only the residual space differs.
 
-Drive 0009 junction, as PR curves rather than operating points:
+Two flow backends, because reporting only the weak one would be choosing the
+opponent:
 
-| method | AP | best F1 | max recall | R @ FP≤5 % | prec @ R≥30 % |
-|---|---|---|---|---|---|
-| **depth residual** | **0.186** | **0.374** | 51.7 % | 37.9 % | 39.6 % |
-| flow residual | 0.021 | 0.114 | 31.0 % | 8.6 % | 5.4 % |
+- **Farnebäck** — classical, no weights, pure OpenCV.
+- **RAFT-large**, torchvision `C_T_SKHT_K_V2` — Chairs → Things → Sintel +
+  **KITTI** + HD1K. A modern learned estimator fine-tuned on this exact domain,
+  5.3 M parameters, i.e. **220× smaller than VGGT**.
 
-And at the raw-signal level, no detector involved — mean surprise inside
-annotated boxes, moving vs parked:
+Pooled over the six held-out drives, 1216 instances:
 
-| residual space | AUC |
-|---|---|
-| **depth** | **0.838** |
-| flow, range-normalised | 0.675 |
-| flow, raw Sampson | 0.627 |
+| method | recall | 95 % CI | precision | parked FP |
+|---|---|---|---|---|
+| **depth residual** (VGGT, 1.16 B) | **24.7 %** | [18.8, 30.4] | 24.5 % | 16.9 % |
+| RAFT-large residual (5.3 M) | 12.1 % | [8.2, 16.7] | **25.8 %** | **9.1 %** |
+| Farnebäck residual (0) | 6.7 % | [4.1, 9.9] | 8.6 % | 7.5 % |
 
-Depth wins in the signal, not just in my tuning of the detector. The range
-normalisation is a fairness fix: the depth residual is relative (|ΔD|/D) and so
-scale-aware, while raw Sampson error is in absolute pixels; flow magnitude goes
-as 1/depth for a forward-moving camera, so dividing by it recovers the same
-normalisation without using depth. It helps the baseline's box-level AUC and
-*hurts* it as a detector (AP 0.005), so the stronger raw variant is reported
-above.
+And as PR curves on drive 0009:
 
-**Caveat that matters:** Farnebäck is a weak flow estimator. RAFT would likely
-narrow this gap and has not been tried. The claim is "depth residual beats
-classical flow residual", not "beats the best possible flow method".
+| method | AP | best F1 | max recall |
+|---|---|---|---|
+| depth residual | **0.186** | **0.374** | 51.7 % |
+| RAFT-large residual | 0.065 | 0.171 | 25.9 % |
+| Farnebäck residual | 0.021 | 0.114 | 31.0 % |
+
+**RAFT changes the conclusion, and it should be read carefully.** Depth wins
+decisively on recall — 2× RAFT's, with non-overlapping confidence intervals — and
+on AP, 2.9×. But **RAFT matches depth on precision (25.8 % vs 24.5 %) and has
+almost half the parked false-alarm rate (9.1 % vs 16.9 %)**. So the defensible
+claim is narrow: *the depth residual finds roughly twice as many moving objects
+as a KITTI-finetuned RAFT residual, at comparable precision, for 220× the
+parameters and about 40× the latency.* Whether that trade is worth it depends
+entirely on the application.
+
+An earlier version of this README reported only Farnebäck (AP 0.186 vs 0.021,
+8.9×). That was choosing a weak opponent, and the honest multiple is 2.9×.
 
 ### Is the signal real, or is it depth-head noise?
 
@@ -203,6 +259,64 @@ is better. Large-object recall goes 65 % → 91 %.
 
 `--row-scaled-area` reaches the highest recall anything reached (69 %) but costs
 precision throughout the useful region, so it is off by default.
+
+---
+
+### False positives, counted rather than guessed
+
+Earlier this README asserted that unmatched detections were "some thin
+structures, some real motion KITTI does not label". That was a guess. Here is the
+count, from drive 0051 (the richest, 315 detections), with every unmatched crop
+rendered to a contact sheet and read by eye —
+`outputs/fp_0051/false_positives.png`, labels in the adjacent CSV.
+
+Of 315 detections, 261 overlapped some annotated object; **54 matched nothing**:
+
+| category | n | share |
+|---|---|---|
+| **a vehicle is visible in the crop** | **30** | **56 %** |
+| foliage / tree canopy | 14 | 26 % |
+| pole, road sign, billboard | 10 | 19 % |
+
+So only **44 % are genuine false alarms** — thin vertical structures and moving
+foliage, both plausible failure modes for a forward warp. The majority contain a
+vehicle that the tracklets do not cover, mostly cars in flowing traffic on a busy
+road.
+
+**That means precision is understated.** On drive 0051, 178 of 315 detections
+matched an annotated *moving* object, giving the reported 56.5 %. If the 30
+vehicle-containing unmatched detections are moving traffic — they look like it,
+though motion cannot be confirmed without labels — precision would be
+**(178+30)/315 = 66.0 %**, about ten points higher. The honest statement is that
+56.5 % is a lower bound and the true value lies between it and ~66 %.
+
+This is a second, independent reason the self-derived ground truth is the wrong
+foundation, and it points the same way: use KittiMoSeg.
+
+### The causal asterisk, measured
+
+VGGT's global attention means the depth being warped was computed in a window
+containing the target frame. The forecast reads only past frames, and this
+matches VGGT-World's own evaluation protocol, but the asterisk was never
+quantified. `scripts/causal_check.py` does it, per target frame:
+
+- **pass A** — VGGT on [t−2, t−1] only: the forecast's inputs.
+- **pass B** — VGGT on [t−1, t]: the observation.
+- The two passes have independent depth scales, aligned on their shared frame t−1.
+
+58 frames of drive 0051, 12× the VGGT compute:
+
+| protocol | recall | precision | parked FP | detections |
+|---|---|---|---|---|
+| non-causal (shipped, 8-frame chunk) | 34.5 % | 63.6 % | 26.8 % | 151 |
+| **strictly causal** (2 passes, aligned) | 29.0 % | **68.1 %** | **17.3 %** | 113 |
+
+**The penalty is 5.5 points of recall, and precision improves.** The scale
+alignment turned out to be the non-issue: the ratio between two fully independent
+VGGT passes has median 0.9918 and IQR 0.972–1.006, so VGGT's depth scale is
+stable to a few percent across passes. A causal deployment is therefore viable —
+it costs 12× the compute and about 5 points of recall, and buys back precision and
+half the false-alarm rate. The asterisk is real but small.
 
 ---
 
@@ -467,9 +581,10 @@ parameter choice. All seven drives are from the same recording session
 (2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
 to weather, night, or another sensor.
 
-**Farneback, not RAFT.** The flow baseline uses the weakest respectable flow
-estimator. A RAFT-based residual would be a stronger opponent and has not been
-tried.
+**RAFT is now the baseline, and it is closer than Farneback suggested.** A
+KITTI-finetuned RAFT-large residual matches this method's precision and beats its
+false-alarm rate at half the recall, with 220x fewer parameters. The remaining
+advantage is recall, not accuracy.
 
 ## Layout
 

@@ -82,8 +82,10 @@ def run_drive(cache: Path, drive: Path, calib: KittiCalib, method: str):
                 maps[stems[g]] = compute_surprise(f, geom, local, threshold=THRESHOLD,
                                                   **SURPRISE_KW)
             else:
+                backend = "raft" if method == "raft" else "farneback"
                 maps[stems[g]] = flow_surprise(imgs_u8[local - 1], imgs_u8[local],
-                                               threshold=THRESHOLD, normalise=False)
+                                               threshold=THRESHOLD, normalise=False,
+                                               backend=backend)
 
     records, n_det, d_mov, n_park, n_pfp = [], 0, 0, 0, 0
     for stem in sorted(maps):
@@ -142,7 +144,7 @@ def main() -> int:
     ap.add_argument("--cache", default="cache")
     ap.add_argument("--data", default="data/2011_09_26")
     ap.add_argument("--calib-dir", default="data/2011_09_26")
-    ap.add_argument("--methods", default="depth,flow")
+    ap.add_argument("--methods", default="depth,flow,raft")
     args = ap.parse_args()
 
     calib = KittiCalib(args.calib_dir)
