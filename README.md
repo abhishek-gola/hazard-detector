@@ -10,6 +10,13 @@ never been told what a car is, and it never learns.
 Everything here runs on an Apple Silicon Mac. Measured on a **MacBook Air M5,
 16 GB**: **0.59 s per frame, 2.8 GB peak memory.**
 
+![The method on one frame](docs/pipeline.png)
+
+*Frame 94 of drive 0009. Top left, what the camera saw. Top right, the depth
+forecast made from frames 92 and 93 alone. Bottom left, the depth VGGT actually
+measured. Bottom right, where those two disagree — boxes on the cars crossing the
+junction. The static world cancels; the movers do not.*
+
 ---
 
 ## In short
@@ -386,8 +393,13 @@ precision throughout the useful region, so it is off by default.
 Earlier this README asserted that unmatched detections were "some thin
 structures, some real motion KITTI does not label". That was a guess. Here is the
 count, from drive 0051 (the richest, 315 detections), with every unmatched crop
-rendered to a contact sheet and read by eye —
-`outputs/fp_0051/false_positives.png`, labels in the adjacent CSV.
+rendered to a contact sheet and read by eye (below; regenerate with
+`scripts/analyse_fp.py`, labels in the adjacent CSV).
+
+![Every unmatched detection on drive 0051](docs/false_positives.jpg)
+
+*All 54. The three yield signs and the tree canopy are genuine false alarms; most
+of the rest have a vehicle sitting in the crop.*
 
 Of 315 detections, 261 overlapped some annotated object; **54 matched nothing**:
 
@@ -578,6 +590,11 @@ python scripts/validate.py --run outputs/kitti_busy \
 Outputs land in `outputs/<name>/`: `top_moments.png` (contact sheet of the most
 surprising moments), `surprise.mp4`, `panels/` (4-up diagnostics), `overlays/`,
 `frame_scores.csv`, `blobs.json`, `summary.json`.
+
+![Ranked most-surprising moments](docs/top_moments.jpg)
+
+*`top_moments.png` from the run above: the eight highest-scoring frames of the
+junction, ranked by peak z. Nothing here was told what a car is.*
 
 ---
 

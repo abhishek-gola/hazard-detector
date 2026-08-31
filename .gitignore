@@ -23,3 +23,16 @@ __pycache__/
 # KittiMoSeg: archives fetched via gdown, labels extracted from them
 data/kittimoseg/
 data/moseg/
+
+# Belt and braces: NO data file is ever committed. Everything under data/ is
+# fetched by scripts/fetch_kitti.py and scripts/fetch_moseg.py. Twelve .7z
+# archives (437 MB largest) were tracked here once and had to be purged from
+# history; these rules stop that recurring.
+data/
+*.7z
+*.7z.*
+*.part
+*.zip
+*.safetensors
+*.pt
+*.npz
