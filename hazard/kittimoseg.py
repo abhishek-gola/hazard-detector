@@ -161,10 +161,18 @@ def mask_to_cropped(mask_native: np.ndarray, target_h: int = 224,
 
 def moving_boxes_cropped(label_dir: str | Path, frame: int,
                          target_h: int = 224, target_w: int = 448):
-    """(box, moving) pairs in cropped-image coordinates, all classes."""
+    """(box, moving, class_name, track_id) in cropped-image coordinates.
+
+    The track id matters for evaluation, not just for bookkeeping: one moving
+    car contributes ~20 highly correlated frames, so a confidence interval
+    bootstrapped over instances would treat 20 views of one event as 20
+    independent trials. Resampling over track ids keeps the unit of
+    independence honest, and KittiMoSeg supplies real ids so there is no need
+    to approximate them by spatial binning.
+    """
     out = []
     for o in load_objects(label_dir, frame):
         b = box_to_cropped(o.box_native, target_h, target_w)
         if b:
-            out.append((b, o.moving, o.class_name))
+            out.append((b, o.moving, o.class_name, o.track_id))
     return out

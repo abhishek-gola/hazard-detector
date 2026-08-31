@@ -21,7 +21,8 @@ Twelve times the VGGT compute of the chunked path, which is why it runs on a
 subset rather than everywhere.
 
     python scripts/causal_check.py --frames data/2011_09_26/..._0051_sync \\
-        --start 140 --count 40 --drive ... --calib-dir data/2011_09_26
+        --drive data/2011_09_26/..._0051_sync --calib-dir data/2011_09_26 \\
+        --start 140 --count 60      # the invocation the README table reports
 """
 
 from __future__ import annotations
@@ -60,13 +61,13 @@ def _ov(a, b) -> float:
     return (x1 - x0) * (y1 - y0) / float(max(aw * ah, 1))
 
 
-def score(maps, stems_used, tracklets, calib):
+def score(maps, stems_used, tracklets, calib, threshold: float = THRESHOLD):
     tracker = BlobTracker(centre_frac=1.6)
     n_mov = n_hit = n_park = n_pfp = n_det = d_mov = 0
     for stem in stems_used:
         raw = int(stem)
         dets = [d for d in tracker.update(
-            extract_blobs(maps[stem], raw, threshold=THRESHOLD, min_area=60), raw)
+            extract_blobs(maps[stem], raw, threshold=threshold, min_area=60), raw)
             if d.age >= 2]
         objs = []
         for t in tracklets:
@@ -87,8 +88,10 @@ def score(maps, stems_used, tracklets, calib):
                 n_pfp += hit
         n_det += len(dets)
         d_mov += sum(1 for d in dets if any(_ov(d.box, b) >= 0.3 for b, mv in objs if mv))
-    return dict(recall=n_hit / max(n_mov, 1), precision=d_mov / max(n_det, 1),
-                parked_fp=n_pfp / max(n_park, 1), n_det=n_det, n_mov=n_mov)
+    rec, prec = n_hit / max(n_mov, 1), d_mov / max(n_det, 1)
+    return dict(recall=rec, precision=prec, parked_fp=n_pfp / max(n_park, 1),
+                f1=2 * rec * prec / (rec + prec) if rec + prec else 0.0,
+                n_det=n_det, n_mov=n_mov)
 
 
 def main() -> int:
@@ -98,7 +101,7 @@ def main() -> int:
     ap.add_argument("--drive", required=True)
     ap.add_argument("--calib-dir", required=True)
     ap.add_argument("--start", type=int, default=140)
-    ap.add_argument("--count", type=int, default=40)
+    ap.add_argument("--count", type=int, default=60)
     ap.add_argument("--stride", type=int, default=2)
     ap.add_argument("--chunk", type=int, default=8)
     ap.add_argument("--weights",
@@ -170,13 +173,45 @@ def main() -> int:
     print(f"scale-alignment ratio across frames: median {np.median(ratios):.4f}, "
           f"IQR {np.percentile(ratios, 25):.4f}-{np.percentile(ratios, 75):.4f}")
 
+    # Compared as curves, not at one threshold. The two protocols emit
+    # different numbers of detections at the same threshold (151 vs 113 at
+    # z=8), so a single-row comparison is reading two different operating
+    # points and calling it a difference between protocols.
+    grid = [4, 6, 8, 10, 13, 16, 20, 25]
+
+    def ap(curve):
+        pts = sorted(((c["recall"], c["precision"]) for c in curve))
+        rp, a = 0.0, 0.0
+        for r, pr in pts:
+            a += (r - rp) * pr
+            rp = r
+        return a
+
+    curves = {}
+    for name, maps in (("non-causal (shipped chunk)", nc_maps),
+                       ("strictly causal (2 passes)", c_maps)):
+        curve = [score(maps, shared, tracklets, calib, threshold=t) for t in grid]
+        curves[name] = curve
+        print(f"\n{name}")
+        print(f"  {'thresh':>7} {'recall':>8} {'prec':>7} {'parkFP':>7} {'F1':>6} {'dets':>6}")
+        for t, c in zip(grid, curve):
+            f1 = (2 * c["recall"] * c["precision"] / (c["recall"] + c["precision"])
+                  if c["recall"] + c["precision"] else 0.0)
+            print(f"  {t:>7} {100 * c['recall']:>7.1f}% {100 * c['precision']:>6.1f}% "
+                  f"{100 * c['parked_fp']:>6.1f}% {f1:>6.3f} {c['n_det']:>6}")
+        print(f"  -> AP {ap(curve):.3f}   best F1 {max(c['f1'] for c in curve):.3f}")
+
     print(f"\n{'=' * 74}")
-    print(f"  {'protocol':<34} {'recall':>8} {'prec':>7} {'parkFP':>7} {'dets':>6}")
-    for name, maps in (("non-causal (shipped, 8-frame chunk)", nc_maps),
-                       ("strictly causal (2 passes, aligned)", c_maps)):
-        r = score(maps, shared, tracklets, calib)
-        print(f"  {name:<34} {100 * r['recall']:>7.1f}% {100 * r['precision']:>6.1f}% "
-              f"{100 * r['parked_fp']:>6.1f}% {r['n_det']:>6}")
+    print("  comparison at matched detection count and matched false-alarm rate")
+    print("=" * 74)
+    print(f"  {'protocol':<28} {'AP':>6} {'bestF1':>8} {'R@FP<=20%':>11} {'R@FP<=10%':>11}")
+    for name, curve in curves.items():
+        cells = []
+        for cap in (0.20, 0.10):
+            ok = [c for c in curve if c["parked_fp"] <= cap]
+            cells.append(f"{100 * max((c['recall'] for c in ok), default=0):>10.1f}%")
+        print(f"  {name:<28} {ap(curve):>6.3f} "
+              f"{max(c['f1'] for c in curve):>8.3f} " + " ".join(cells))
     print("=" * 74)
     return 0
 

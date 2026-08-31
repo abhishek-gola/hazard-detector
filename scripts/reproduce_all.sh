@@ -1,69 +1,102 @@
 #!/usr/bin/env bash
-# Regenerate every number in the README from scratch.
+# Regenerate every table in the README, in the order they appear.
 #
-# Roughly 25 min of compute on an M5 Air after the downloads finish, most of it
-# the one-time VGGT geometry caching. Everything after that replays from cache.
+# Each step names the README section it produces, so a reader can tell which
+# numbers came from which invocation. That traceability is not cosmetic: a
+# fixed-threshold comparison in the causal section survived three commits
+# precisely because nobody could tell which command had produced the row.
+#
+# Verified on Python 3.12.14, macOS 26.5.1, Apple M5, 16 GB.
+# Budget: ~35 min of compute after downloads, most of it one-time VGGT caching.
+#
+#   PY=/path/to/python scripts/reproduce_all.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PY="${PY:-python3}"
 DATA=data/2011_09_26
 D9=$DATA/2011_09_26_drive_0009_sync
+DRIVES_ALL=0009,0013,0014,0018,0051,0056,0059
+DRIVES_HELDOUT=0013,0014,0018,0051,0056,0059
 
-echo "=== 0. sanity: geometry with no network involved ==="
+hdr() { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
+
+hdr "0. sanity: geometry, no weights and no network"
+# README: "How it works" -> normalised smoothing / noise model claims
 $PY scripts/selftest_geometry.py
 
-echo "=== 1. weights (5 GB, skipped if present) ==="
+hdr "1. weights: facebook/VGGT-1B, 5 GB (skipped if present)"
 $PY scripts/fetch_weights.py
 
-echo "=== 2. drives ==="
-for d in 0009 0013 0014; do $PY scripts/fetch_kitti.py --drive "$d"; done
+hdr "2. KITTI raw frames for the seven evaluated drives"
+for d in 0009 0013 0014 0018 0051 0056 0059; do
+  $PY scripts/fetch_kitti.py --drive "$d"
+done
 
-echo "=== 3. cache VGGT geometry (the only expensive step) ==="
+hdr "3. KittiMoSeg ground truth (primary labels)"
+# Needs gdown + py7zr in an isolated dir; see requirements-moseg.txt
+if PYTHONPATH=.tools $PY -c "import py7zr" 2>/dev/null; then
+  PYTHONPATH=.tools $PY scripts/fetch_moseg.py --drives "$DRIVES_ALL"
+else
+  echo "  skipped: pip install --target .tools -r requirements-moseg.txt"
+  echo "  then: PYTHONPATH=.tools $PY scripts/fetch_moseg.py --drives $DRIVES_ALL"
+fi
+
+hdr "4. cache VGGT geometry (the only expensive step, ~12 min)"
 $PY scripts/cache_geometry.py --frames $D9 --start 200 --count 105 --out cache/junction
 $PY scripts/cache_geometry.py --frames $D9 --start 0   --count 99  --out cache/calib
 $PY scripts/cache_geometry.py --frames $D9 --start 200 --count 105 \
     --target-h 224 --target-w 742 --out cache/junction_fov
-$PY scripts/cache_geometry.py --frames $DATA/2011_09_26_drive_0013_sync \
-    --start 6 --count 58  --out cache/d0013
-$PY scripts/cache_geometry.py --frames $DATA/2011_09_26_drive_0014_sync \
-    --start 0 --count 108 --out cache/d0014
+while read -r dv st ct; do
+  $PY scripts/cache_geometry.py --frames "$DATA/2011_09_26_drive_${dv}_sync" \
+      --start "$st" --count "$ct" --out "cache/d${dv}"
+done <<'EOF'
+0013 6 58
+0014 0 108
+0018 0 110
+0051 140 110
+0056 70 110
+0059 110 110
+EOF
 
-echo "=== 4. shipped run: outputs/tier1 (pictures, video, blobs.json) ==="
+hdr "5. shipped run: outputs/tier1 (pictures, video, blobs.json)"
+# README: the top_moments.png / surprise.mp4 referenced in Results
 $PY run.py --frames $D9 --start 200 --stride 2 --count 105 --chunk 8 --out outputs/tier1
 
-echo "=== 5. control: is the signal real (AUC 0.813) ==="
-$PY scripts/control_test.py --run outputs/kitti_busy --drive $D9 --calib $DATA \
-  || echo "  (needs a --save-maps run; see README)"
+hdr "6. README: 'Was the self-derived ground truth any good?' + 'Primary results' + 'mIoU'"
+$PY scripts/eval_moseg.py --drives "$DRIVES_ALL" --calib-dir $DATA
 
-echo "=== 6. Tier-1 ablation, both segments ==="
+hdr "7. README: 'Is the signal real, or is it depth-head noise?' (AUC 0.813)"
+$PY run.py --frames $D9 --start 200 --stride 2 --count 105 --chunk 8 \
+    --no-panels --save-maps --out outputs/kitti_busy
+$PY scripts/control_test.py --run outputs/kitti_busy --drive $D9 --calib $DATA
+
+hdr "8. README: 'What the small-object fixes bought' (Tier-1 ablation)"
 $PY scripts/ablate_tier1.py --cache cache --drive $D9 --calib-dir $DATA
 
-echo "=== 7. depth vs classical flow baseline ==="
+hdr "9. README: 'Baselines' — depth vs Farneback vs RAFT"
 $PY scripts/compare_baselines.py --cache cache/junction --drive $D9 --calib-dir $DATA
+$PY scripts/test_once.py --drives "$DRIVES_HELDOUT" --methods depth,flow,raft \
+    --calib-dir $DATA
 
-echo "=== 8. KittiMoSeg: fetch, extract, evaluate (primary ground truth) ==="
-if [ ! -d data/moseg/0009 ]; then
-  echo "  KittiMoSeg needs gdown + py7zr; install into an isolated dir:"
-  echo "    \$PY -m pip install --target .tools gdown py7zr"
-  echo "    PYTHONPATH=.tools \$PY -m gdown --folder \\"
-  echo "      https://drive.google.com/drive/folders/1lGdLsoHHTYfLOex8Mci85EQNy74k39rq \\"
-  echo "      -O data/kittimoseg"
-  echo "  then extract per drive via hazard.kittimoseg.extract_drive"
-fi
-$PY scripts/eval_moseg.py --drives 0009,0013,0014,0018 --calib-dir $DATA \
-  || echo "  (KittiMoSeg labels not present; see above)"
+hdr "10. README: 'What actually governs recall: apparent size'"
+# same invocation as step 9's test_once; the size and tangential tables come from it
 
-echo "=== 9. false positives: contact sheet + buckets ==="
+hdr "11. README: 'False positives, counted rather than guessed'"
 $PY scripts/analyse_fp.py --cache cache/d0051 \
-  --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --out outputs/fp_0051
+    --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --out outputs/fp_0051
+echo "  manual_category labels in outputs/fp_0051/false_positives.csv were added"
+echo "  by hand from the contact sheet; the automatic buckets are priors only."
 
-echo "=== 10. causal protocol penalty ==="
+hdr "12. README: 'The causal asterisk, measured'"
 $PY scripts/causal_check.py --frames $DATA/2011_09_26_drive_0051_sync \
-  --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --start 140 --count 60
+    --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --start 140 --count 60
 
-echo "=== 11. HELD-OUT TEST on self-derived labels, frozen config ==="
-$PY scripts/test_once.py --drives 0013,0014 --calib-dir $DATA
+hdr "13. README: 'Negative result 3 — full field of view does not work'"
+$PY scripts/compare_baselines.py --cache cache/junction_fov \
+    --drive $D9 --calib-dir $DATA --grid 8,13,20 || true
 
 echo
-echo "done. README tables correspond to steps 5-8."
+echo "done. Every README table above is regenerated by the step naming it."
+echo "Numbers that will NOT reproduce bit-exactly: none known. The float16"
+echo "geometry cache that once perturbed them is fixed (cache_geometry.py)."

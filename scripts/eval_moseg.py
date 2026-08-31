@@ -145,8 +145,8 @@ def main() -> int:
 
                 # ---- KittiMoSeg labels for this frame
                 mo = ms.moving_boxes_cropped(ldir, raw)
-                mo_moving = [(b, c) for b, mv, c in mo if mv]
-                mo_static = [(b, c) for b, mv, c in mo if not mv]
+                mo_moving = [(b, c, tid) for b, mv, c, tid in mo if mv]
+                mo_static = [(b, c) for b, mv, c, _ in mo if not mv]
 
                 # ---- (1) derived GT vs KittiMoSeg
                 derived = []
@@ -161,7 +161,7 @@ def main() -> int:
                 used = set()
                 for b, mv in derived:
                     best, bj = 0.0, -1
-                    for j, (mb, _mv, _c) in enumerate(mo):
+                    for j, (mb, _mv, _c, _tid) in enumerate(mo):
                         if j in used:
                             continue
                         v = iou(b, mb)
@@ -179,15 +179,15 @@ def main() -> int:
                             gt_fn += 1
                     elif mv:
                         gt_fp += 1
-                for j, (mb, mv, _) in enumerate(mo):
+                for j, (mb, mv, _, _tid) in enumerate(mo):
                     if mv and j not in used:
                         gt_fn += 1
 
                 # ---- (2) detector vs KittiMoSeg boxes
-                for b, cname in mo_moving:
+                for b, cname, tid in mo_moving:
                     hit = any(ov_of_det(x.box, b) >= 0.3 for x in dets)
                     det_rec.append(int(hit))
-                    det_rec_g.append(f"{dv}:{cname}:{b[0] // 32}")
+                    det_rec_g.append(f"{dv}:{tid}")   # real KittiMoSeg track id
                     d_rec.append(int(hit))
                 for b, _ in mo_static:
                     n_static += 1
@@ -195,7 +195,7 @@ def main() -> int:
                 n_det += len(dets)
                 d_det += len(dets)
                 k = sum(1 for x in dets
-                        if any(ov_of_det(x.box, b) >= 0.3 for b, _ in mo_moving))
+                        if any(ov_of_det(x.box, b) >= 0.3 for b, _, _ in mo_moving))
                 d_mov += k
                 d_dmov += k
 
@@ -237,6 +237,7 @@ def main() -> int:
     print("=" * 80)
     pt, lo, hi = bootstrap(det_rec, det_rec_g)
     print(f"  moving instances                {len(det_rec)}")
+    print(f"  distinct tracks (CI grouped on these)  {len(set(det_rec_g))}")
     print(f"  recall                          {100 * pt:.1f}% [{100 * lo:.1f}, {100 * hi:.1f}]")
     print(f"  precision                       {100 * d_mov / max(n_det, 1):.1f}%")
     print(f"  static-object false-flag rate   {100 * n_sfp / max(n_static, 1):.1f}%"

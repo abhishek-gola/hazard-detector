@@ -1,0 +1,8 @@
+# KittiMoSeg / InstanceMotSeg ground truth fetch + extract.
+# Install these into an isolated directory rather than the runtime env:
+#
+#   pip install --target .tools -r requirements-moseg.txt
+#   PYTHONPATH=.tools python scripts/fetch_moseg.py
+#
+gdown==6.1.0
+py7zr==1.1.3

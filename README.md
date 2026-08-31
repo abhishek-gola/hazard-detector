@@ -61,6 +61,8 @@ motion labels, and mIoU.
 
 ### Was the self-derived ground truth any good?
 
+*Produced by `scripts/eval_moseg.py --drives 0009,0013,0014,0018,0051,0056,0059`, section 1.*
+
 `hazard/kitti_labels.py` decides which tracklets move by fitting a 2D rigid
 velocity field to the tracklets themselves and refitting on the quietest 65 %.
 KittiMoSeg decides the same thing from GPS/IMU odometry. Matching their object
@@ -99,15 +101,20 @@ detections had a visible vehicle in them. They were real movers the labels misse
 Two things to read first, because they change how the rest should be taken.
 
 **Everything was tuned on one drive, and the held-out numbers are much worse.**
-Drive 0009's junction gives 48.3 % recall. The same frozen configuration, run
-once on two drives downloaded afterwards, gives **10.5 %**. That gap is the
-headline finding of this project.
+Drive 0009's junction gives 48.3 % recall. The same frozen configuration, scored
+against real KittiMoSeg labels across seven drives, gives **28.7 %**. That gap is
+the headline finding of this project.
 
-**Recall is governed by tangential motion and apparent size, not by a single
-number.** Any scalar recall figure here is a property of the traffic in the clip
-as much as of the method.
+**Recall is governed by apparent size, and per-drive precision ranges 18 % to
+83 %.** Any scalar figure here is a property of the traffic in the clip as much as
+of the method.
+
+Every table below names the script that produces it, and
+`scripts/reproduce_all.sh` regenerates all of them in order.
 
 ### Primary results: scored against KittiMoSeg
+
+*Produced by `scripts/eval_moseg.py`, section 2. CIs bootstrap over 108 real KittiMoSeg track ids.*
 
 Frozen config (noise model, normalised blur, threshold 8, tracker gate, blob
 rules), all chosen on drive 0009 before any other drive was fetched. Seven drives,
@@ -139,11 +146,18 @@ Per drive, and the spread is the real story — precision ranges 18 % to 83 %:
 
 ### mIoU — against the actual published numbers
 
-| | Precision | Recall | F-score | **moving-class IoU** |
+*Produced by `scripts/eval_moseg.py`, section 3.*
+
+| | Precision | Recall | F-score | **motion-segmentation IoU** |
 |---|---|---|---|---|
 | MODNet (RGB+OF), separate — *supervised* | 44.34 | 69.84 | 54.25 | **37.22** |
 | MODNet (RGB+OF), joint — *supervised* | 56.18 | 70.32 | 62.46 | **45.41** |
 | **this method — unsupervised, zero training** | — | — | — | **12.45** [9.59, 15.48] |
+
+MODNet's Table II reports the task-level motion-segmentation figure, not a
+per-class IoU, so that is how the column is labelled here; mine is the IoU of the
+moving class against `binary_img_Output`, which is the closest available match
+but not provably the identical quantity.
 
 MODNet numbers are Table II of
 [arXiv:1709.04821](https://arxiv.org/abs/1709.04821), motion segmentation on
@@ -158,17 +172,19 @@ like-for-like, and only the first is in my favour:
   trains nothing and has never seen a motion label.
 - MODNet runs at 1048×384 — **four times the pixels**. At 224×448 a car at 40 m
   is a few hundred pixels, and mask IoU punishes low resolution hard.
-- **It is not their test split.** I scored four drives chosen for traffic density,
+- **It is not their test split.** I scored seven drives chosen for traffic density,
   not KITTI MOD's evaluation split, so this is not a benchmark result.
 
 The structural reason for the gap is not resolution or supervision though: the
 surprise mask covers the *mispredicted part* of an object — a flank, a bumper —
 not its silhouette. As a **detector** (does a box land on the moving thing) this
-reaches 24.6 % recall at 26.4 % precision unsupervised. As a **segmenter** it is
+reaches 28.7 % recall at 43.3 % precision unsupervised. As a **segmenter** it is
 5–6× off supervised work, and mIoU measures segmentation. Closing that would mean
 using the blob as a seed for a segmentation step, which is not built.
 
 ### What actually governs recall: apparent size
+
+*Produced by `scripts/test_once.py --drives 0013,0014,0018,0051,0056,0059` (self-derived labels).*
 
 | box area | n | recall | 95 % CI |
 |---|---|---|---|
@@ -192,13 +208,15 @@ this sample size, and in the smallest band it slightly reverses.
 This corrects an earlier claim in this README. On drive 0009 alone the tangential
 effect looked dominant — mean box score rose 1.57 → 7.08 across tangential
 quartiles, a 4.5× spread — and that was written up as "recall tracks tangential
-motion, not size". With 1212 instances across six drives instead of 58 on one,
+motion, not size". With 1216 instances across six drives instead of 58 on one,
 that does not hold. Size dominates; tangential motion is real but secondary.
 The mechanism argument still stands (an object arriving on pixels the forecast
 assigned to background produces a much larger residual than one whose depth
 merely drifts), it simply is not the largest term.
 
 ### Baselines: classical flow, and a modern one
+
+*Produced by `scripts/test_once.py --methods depth,flow,raft` and `scripts/compare_baselines.py`.*
 
 `identity` was a straw man. The real question is whether a 1.16 B-parameter
 transformer beats a flow-residual method: compute dense optical flow, fit the
@@ -244,6 +262,8 @@ An earlier version of this README reported only Farnebäck (AP 0.186 vs 0.021,
 
 ### Is the signal real, or is it depth-head noise?
 
+*Produced by `scripts/control_test.py --run outputs/kitti_busy`.*
+
 The control: **a parked car and a moving car are the same object** — same paint,
 same glass, same silhouette, same depth discontinuities. Depth noise cannot tell
 them apart. Raw surprise inside every annotated box, no threshold, no blobs:
@@ -277,6 +297,8 @@ cars 10× less often.
 
 ### What the small-object fixes bought
 
+*Produced by `scripts/ablate_tier1.py --cache cache`.*
+
 Drive 0009 junction, cumulative, threshold 8:
 
 | config | recall | precision | parked FP | F1 | <600 | 600–2k | >2k |
@@ -305,6 +327,8 @@ precision throughout the useful region, so it is off by default.
 
 ### False positives, counted rather than guessed
 
+*Produced by `scripts/analyse_fp.py --cache cache/d0051`; labels added by hand from the contact sheet.*
+
 Earlier this README asserted that unmatched detections were "some thin
 structures, some real motion KITTI does not label". That was a guess. Here is the
 count, from drive 0051 (the richest, 315 detections), with every unmatched crop
@@ -332,30 +356,45 @@ from the other direction: the static-object false-flag rate is **3.1 %, not
 flagging a car they had wrongly labelled parked. The contact sheet was reading
 the ground truth's errors, not the detector's.
 
-### The causal asterisk, measured
+### The causal asterisk, measured — and it points the other way
+
+*Produced by `scripts/causal_check.py --start 140 --count 60` on drive 0051.*
 
 VGGT's global attention means the depth being warped was computed in a window
-containing the target frame. The forecast reads only past frames, and this
-matches VGGT-World's own evaluation protocol, but the asterisk was never
-quantified. `scripts/causal_check.py` does it, per target frame:
+containing the target frame. The forecast reads only past frames, and this matches
+VGGT-World's own evaluation protocol, but the asterisk needed a number:
 
 - **pass A** — VGGT on [t−2, t−1] only: the forecast's inputs.
 - **pass B** — VGGT on [t−1, t]: the observation.
-- The two passes have independent depth scales, aligned on their shared frame t−1.
+- Independent depth scales, aligned on their shared frame t−1.
 
-58 frames of drive 0051, 12× the VGGT compute:
+58 frames, 12× the VGGT compute. **Compared as curves, because at a fixed
+threshold the two protocols emit different numbers of detections** (151 vs 113 at
+z = 8) — a single-row comparison reads two different operating points and calls
+the difference a protocol effect. An earlier draft of this README made exactly
+that mistake and concluded "the penalty is 5.5 points of recall, and precision
+improves".
 
-| protocol | recall | precision | parked FP | detections |
+| protocol | AP | best F1 | R @ FP≤20 % | R @ FP≤10 % |
 |---|---|---|---|---|
-| non-causal (shipped, 8-frame chunk) | 34.5 % | 63.6 % | 26.8 % | 151 |
-| **strictly causal** (2 passes, aligned) | 29.0 % | **68.1 %** | **17.3 %** | 113 |
+| non-causal (shipped 8-frame chunk) | 0.258 | 0.447 | 23.8 % | **0.0 %** |
+| **strictly causal** (2 passes, aligned) | **0.280** | **0.453** | **29.0 %** | **17.9 %** |
 
-**The penalty is 5.5 points of recall, and precision improves.** The scale
-alignment turned out to be the non-issue: the ratio between two fully independent
-VGGT passes has median 0.9918 and IQR 0.972–1.006, so VGGT's depth scale is
-stable to a few percent across passes. A causal deployment is therefore viable —
-it costs 12× the compute and about 5 points of recall, and buys back precision and
-half the false-alarm rate. The asterisk is real but small.
+**The strictly causal protocol is slightly better, not worse.** AP 0.280 vs
+0.258, and at a tight false-alarm budget the non-causal protocol cannot operate
+at all while the causal one reaches 17.9 % recall.
+
+The likely mechanism, untested: when the target frame is inside VGGT's window,
+global attention partly explains away the moving object — the depth assigned to
+t−1 is influenced by where that object is at t, which smears the motion across
+frames and shrinks the residual the detector depends on. Removing the target
+frame gives a cleaner forecast input.
+
+So the asterisk on every other number in this README is not a penalty that
+flatters the method; if anything the shipped protocol is the weaker of the two,
+and a causal deployment costs 12× compute rather than accuracy. The scale
+alignment turned out to be a non-issue: the ratio between two fully independent
+VGGT passes has median 0.9918, IQR 0.972–1.006.
 
 ---
 
@@ -403,7 +442,7 @@ residual speed is 0.57 m/frame against 0.02 for parked cars, and the ego-fit
 residual does not grow with range (0.018 at 0–20 m, 0.024 at 50–80 m).
 
 **But it does not survive as the primary effect.** Cross-tabulated against size
-over 1212 held-out instances, the tangential effect is not separable from noise
+over 1216 held-out instances, the tangential effect is not separable from noise
 within size bands (see the table above), while the size effect is unambiguous.
 The mechanism is right; its explanatory power was overstated from a single clip.
 
@@ -582,55 +621,65 @@ Measured on the M5 Air: 3.3 s per 8-frame VGGT pass, **0.59 s per scored frame**
 
 ## Limits
 
-- **Blind to motion along the viewing ray.** A car directly ahead at a similar
-  speed produces almost no depth residual. The method sees crossing traffic far
-  better than following traffic — visible in the range table and in which
-  junction frames score highest.
-- **Range-limited.** Below ~600 px of object area, recall is 0 %.
-- **Precision is 21.5 %.** Of 93 reported blobs, 45 sat on nothing KITTI
-  annotates. Some are thin vertical structures (poles, fence posts) where the
-  warp is genuinely unreliable; some are real motion outside KITTI's annotation
-  range. Separating those two is the obvious next piece of work.
-- **The ground truth is derived, not given.** KITTI does not label
-  moving-vs-parked, so `hazard/kitti_labels.py` fits a 2D rigid ego-motion field
-  per frame and calls the residual motion. Fitting a *translation* instead — the
-  obvious first attempt — mislabels every distant parked car as moving through
-  every turn, because ego rotation induces apparent velocity that grows with
-  range. That bug cost 10 points of apparent recall before it was found.
+Stated against current results. Every figure here is measured, and several
+contradict earlier drafts of this file — those corrections are in the sections
+above rather than hidden.
 
+**Not usable as a detector.** 28.7 % recall [23.8, 33.6] at 43.3 % precision,
+0.59 s/frame. That is a dataset-mining tool, not a perception component.
 
-**VGGT saw the target frame.** Worth being explicit about, because it sounds like
-a leak and is not quite one. Depth and pose come from a single VGGT pass over the
-whole 8-frame chunk, and VGGT's global attention means the depth assigned to
-frame *t−1* was computed with frame *t* in the window. The *forecast* uses only
-past frames — pose extrapolation from t−2 and t−1, warping t−1's depth — but the
-depth values it warps were produced by a network that had seen the future frame.
-This mirrors the protocol in VGGT-World's own evaluation, which likewise runs
-`part1` over the full window to obtain target tokens. VGGT is being used as a
-measuring instrument rather than a predictor, so the alternative — a separate pass
-per window — would cost 6× the compute and introduce a different arbitrary depth
-scale per frame, which is worse. But a strictly causal deployment would need
-either a causal backbone or per-window passes with scale alignment, and the
-numbers here would change.
+**Per-drive variance exceeds every effect measured.** Precision ranges 18.3 %
+(drive 0018) to 82.5 % (drive 0051); recall 7.0 % to 37.5 %. Clip selection
+matters more than any parameter in the repo, which means the pooled numbers
+describe this drive mix rather than the method.
 
-**One tuning drive, six held-out drives.** 96 held-out tracklets over 1216
-instances gives [18.8, 30.4] % on pooled recall — usable, but per-drive recall
-still ranges 7.0–34.5 %, so clip selection matters more than any remaining
-parameter choice. All seven drives are from the same recording session
-(2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
-to weather, night, or another sensor.
+**Recall collapses with apparent size.** Objects over 2000 px² are found at
+66.3 %; under 600 px², 9.6 % [5.2, 15.0]. More than half of all annotated moving
+vehicles are in that lower band. On drive 0009's calibration segment — median
+422 px², median range 42.6 m — box-level AUC is 0.476, below chance: at that
+range a vehicle's inter-frame depth change is inside VGGT's own depth noise, and
+no threshold recovers a signal that is not there.
 
-**mIoU is 3-3.6x below supervised work.** 12.45 % against MODNet's published
-37.22-45.41 % moving-class IoU, at a quarter of their input resolution and with
-no training -- but also not on their test split, so it is indicative only. The detector-level figures are more
-respectable, but if the task is stated as motion *segmentation* this method is
-not competitive, and the gap is structural: it marks the mispredicted part of an
-object, not the object.
+**Blind to motion along the viewing ray.** A car ahead at a similar speed
+produces almost no depth residual. Tangential motion is the mechanism, though
+cross-tabulation over 1216 instances shows it is secondary to size and not
+separable from noise within size bands. The flow baseline shares this blind spot:
+epipolar lines radiate from the focus of expansion.
 
-**RAFT is now the baseline, and it is closer than Farneback suggested.** A
-KITTI-finetuned RAFT-large residual matches this method's precision and beats its
-false-alarm rate at half the recall, with 220x fewer parameters. The remaining
-advantage is recall, not accuracy.
+**mIoU is 3–3.6× below supervised work.** 12.45 % against MODNet's 37.22–45.41 %,
+at a quarter of their input resolution and with no training — but also not on
+their test split, so indicative only. The gap is structural: the surprise mask
+marks the mispredicted part of an object, not its silhouette. It detects better
+than it segments.
+
+**RAFT is closer than Farnebäck suggested.** A KITTI-finetuned RAFT-large
+residual (5.3 M params, 220× smaller) matches this method's precision and beats
+its false-alarm rate at half the recall. The remaining advantage is recall, not
+accuracy.
+
+**One recording session, and that is forced.** All seven drives are
+`2011_09_26`. KITTI raw publishes tracklets for no other date (verified — every
+other date 404s), and **all 38 archives in the KittiMoSeg release are also
+`2011_09_26`**. So this is the ceiling of the field's standard benchmark for the
+task, not only of the shortcut taken here. Nothing here speaks to weather, night,
+rain, or another sensor.
+
+**Seven of 38 available drives.** Labels exist for all 38; only seven have cached
+VGGT geometry. 2,024 instances over 108 tracks could be roughly five times that,
+which would turn "precision ranges 18–83 %" from seven anecdotes into a
+distribution. This is compute, not ideas.
+
+**The ground truth used for six turns of development was 58.9 % complete.** The
+derived rigid-field labels are 93.6 % precise but found only 58.9 % of KittiMoSeg's
+movers, because `speed_thresh = 0.45 m/frame` was set for label trustworthiness.
+That flattered recall and inflated the parked-car false-alarm rate 3.4×. Any
+result in this repo predating `scripts/eval_moseg.py` should be read with that in
+mind.
+
+**Untested hypotheses, named so they are not mistaken for conclusions.** Full-FOV
+input fails and per-frame MAD inflation is the leading explanation — not tested.
+Growing the surprise blob into an object mask should close the mIoU gap if the
+structural diagnosis is right — not built. Both are the loosest threads here.
 
 ## Layout
 
