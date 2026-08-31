@@ -42,7 +42,27 @@ $PY scripts/ablate_tier1.py --cache cache --drive $D9 --calib-dir $DATA
 echo "=== 7. depth vs classical flow baseline ==="
 $PY scripts/compare_baselines.py --cache cache/junction --drive $D9 --calib-dir $DATA
 
-echo "=== 8. HELD-OUT TEST, frozen config, run once ==="
+echo "=== 8. KittiMoSeg: fetch, extract, evaluate (primary ground truth) ==="
+if [ ! -d data/moseg/0009 ]; then
+  echo "  KittiMoSeg needs gdown + py7zr; install into an isolated dir:"
+  echo "    \$PY -m pip install --target .tools gdown py7zr"
+  echo "    PYTHONPATH=.tools \$PY -m gdown --folder \\"
+  echo "      https://drive.google.com/drive/folders/1lGdLsoHHTYfLOex8Mci85EQNy74k39rq \\"
+  echo "      -O data/kittimoseg"
+  echo "  then extract per drive via hazard.kittimoseg.extract_drive"
+fi
+$PY scripts/eval_moseg.py --drives 0009,0013,0014,0018 --calib-dir $DATA \
+  || echo "  (KittiMoSeg labels not present; see above)"
+
+echo "=== 9. false positives: contact sheet + buckets ==="
+$PY scripts/analyse_fp.py --cache cache/d0051 \
+  --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --out outputs/fp_0051
+
+echo "=== 10. causal protocol penalty ==="
+$PY scripts/causal_check.py --frames $DATA/2011_09_26_drive_0051_sync \
+  --drive $DATA/2011_09_26_drive_0051_sync --calib-dir $DATA --start 140 --count 60
+
+echo "=== 11. HELD-OUT TEST on self-derived labels, frozen config ==="
 $PY scripts/test_once.py --drives 0013,0014 --calib-dir $DATA
 
 echo

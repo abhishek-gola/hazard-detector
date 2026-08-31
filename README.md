@@ -36,51 +36,60 @@ to what you actually mean by "hazard" than "there is a car here".
 
 ---
 
-## Related work, and why the ground truth here is self-derived
+## Ground truth: KittiMoSeg, and what the self-derived labels got wrong
 
-This needs saying up front, because it is the main limitation of every number
-below.
-
-**A labelled dataset for exactly this task already exists.** KittiMoSeg
-([Siam et al., MODNet, arXiv:1709.04821](https://arxiv.org/abs/1709.04821))
-provides moving/static ground truth on KITTI raw — 1,300 images originally,
-extended ~10× by Hazem Rashed to **12,919 images** across KITTI raw sequences.
+A labelled dataset for exactly this task already existed and I should have used
+it first. KittiMoSeg ([Siam et al., MODNet,
+arXiv:1709.04821](https://arxiv.org/abs/1709.04821)) provides moving/static
+ground truth on KITTI raw — 1,300 frames originally, extended ~10× by Hazem
+Rashed to **12,919 frames**;
 [KITTI InstanceMotSeg](https://arxiv.org/abs/2008.07008) adds instance-level
-motion annotation over 12.9K samples for five classes, with motion estimated in
-3D world coordinates. Both are at
+motion over 12.9 K samples. Both at
 [sites.google.com/view/instancemotseg](https://sites.google.com/view/instancemotseg/).
 
-**I built my own ground truth instead, and that was the wrong call.** Worse, the
-method I derived independently — annotated 3D boxes, plus an ego-motion estimate,
-plus association across frames to separate moving from static — is essentially
-KittiMoSeg's method. The one novel piece is *how* ego motion is estimated:
-KittiMoSeg uses GPS/IMU odometry, whereas `hazard/kitti_labels.py` fits a 2D
-rigid velocity field to the tracklets themselves and refits on the quietest 65 %.
-That was invented to work around not having the `oxts` data, and it does work,
-but solving a solved problem is not a contribution.
+It is now downloaded and wired in (`hazard/kittimoseg.py`,
+`scripts/eval_moseg.py`), and the primary results below are scored against it.
+The release is 38 per-drive archives carrying pixel motion masks
+(`binary_img_Output`), per-instance masks, and one text line per object
+(`track_id moving y0 x0 y1 x1 class`) at 2× KITTI native resolution.
 
-**What it costs.** Three things, and the first is the serious one:
+Worth recording: **every archive in the release is `2011_09_26`** — the same
+afternoon KITTI publishes tracklets for. The single-recording-session limitation
+is a property of the field's standard benchmark for this task, not only of the
+shortcut taken here. What KittiMoSeg does buy is 38 drives instead of 7, real
+motion labels, and mIoU.
 
-1. **The numbers here are comparable to nothing.** Published work on this task
-   reports mIoU on KittiMoSeg's pixel masks. This reports box-level recall and
-   precision on self-derived box labels. Neither the metric nor the ground truth
-   matches, so "24.7 % recall" cannot be placed against any MODNet-era result —
-   and those were reporting considerably better performance on moving-object
-   segmentation back in 2017.
-2. **The evaluation is confined to one recording session.** KITTI raw publishes
-   tracklets *only* for `2011_09_26` — every other date returns 404 — so
-   tracklet-derived GT cannot leave that afternoon. KittiMoSeg spans more of KITTI
-   raw and would lift that ceiling directly.
-3. **My labels are incomplete in a way that biases against me.** See the false
-   positive analysis below: 56 % of unmatched detections have a visible vehicle
-   in them.
+### Was the self-derived ground truth any good?
 
-**Migration path**, concretely: KittiMoSeg's extension ships motion masks with
-RGB taken from KITTI raw, so it drops into `hazard/kitti_labels.py` as an
-alternative label source keyed by drive and frame, and `project_box` becomes
-unnecessary since the masks are already in image space. Reporting mIoU alongside
-box recall would then make these results directly comparable to the literature.
-That is the single highest-value change left in this project, and it is not done.
+`hazard/kitti_labels.py` decides which tracklets move by fitting a 2D rigid
+velocity field to the tracklets themselves and refitting on the quietest 65 %.
+KittiMoSeg decides the same thing from GPS/IMU odometry. Matching their object
+sets by IoU over four drives, 1,436 matched objects:
+
+| | |
+|---|---|
+| motion-flag agreement | 60.4 % |
+| derived "moving" that KittiMoSeg also calls moving (**precision**) | **90.6 %** (326/360) |
+| KittiMoSeg "moving" that the derived GT finds (**recall**) | **37.9 %** (326/861) |
+
+**The rigid-field fit was sound but the threshold was far too conservative.** When
+it says an object moves it is right 90.6 % of the time, so the method works. But
+it finds only 37.9 % of the moving objects, because `speed_thresh = 0.45 m/frame`
+(~16 km/h) was chosen to make the labels trustworthy — the docstring says
+"precision matters more than coverage" — and that silently discarded every slow
+mover.
+
+**That biased earlier results in two directions at once**, and both are
+corrected below:
+
+- Recall was measured against a label set containing only the *faster* 38 % of
+  movers, which are the easier ones. Recall was flattered.
+- Every detection on one of the missing 62 % counted as a false alarm, and worse,
+  counted as *flagging a parked car*. The 16.9 % "parked false-flag rate" was
+  mostly my labels calling moving cars parked. Against KittiMoSeg it is **3.1 %**.
+
+This is also what the false-positive contact sheet was showing: 56 % of unmatched
+detections had a visible vehicle in them. They were real movers the labels missed.
 
 ---
 
@@ -97,35 +106,55 @@ headline finding of this project.
 number.** Any scalar recall figure here is a property of the traffic in the clip
 as much as of the method.
 
-### Held-out test — frozen config, run once per drive
+### Primary results: scored against KittiMoSeg
 
-Everything (noise model, blur, threshold 8, tracker gate, blob rules) was chosen
-on drive 0009. Six further drives were fetched afterwards and
-`scripts/test_once.py` is the only thing ever run on them. No knob was touched
-after seeing any of this.
+Frozen config (noise model, normalised blur, threshold 8, tracker gate, blob
+rules), all chosen on drive 0009 before any other drive was fetched. Four drives
+with both cached geometry and KittiMoSeg labels; 861 moving instances.
 
-Confidence intervals bootstrap over **tracklets**, not instances — one moving car
-contributes ~20 correlated frames, so resampling instances would give intervals
-several times too narrow.
+| | vs KittiMoSeg | vs self-derived labels |
+|---|---|---|
+| moving instances | **861** | 1216 (6 drives) |
+| recall | **24.6 %** [17.1, 33.3] | 24.7 % [18.8, 30.4] |
+| precision | **26.4 %** | 24.5 % |
+| static-object false-flag rate | **3.1 %** (18/582) | 16.9 % |
 
-| method | instances | tracklets | recall | 95 % CI | precision | parked FP |
-|---|---|---|---|---|---|---|
-| **depth residual** | 1216 | 96 | **24.7 %** | [18.8, 30.4] | 24.5 % | 16.9 % |
-| flow residual | 1216 | 96 | 6.7 % | [4.1, 9.9] | 8.6 % | 7.5 % |
+Recall lands in the same place by coincidence — the real label set is both larger
+and harder. The number that moves is the false-alarm rate: **3.1 % against real
+labels, not 16.9 %**, because most of what looked like flagging parked cars was
+flagging cars my own labels had wrongly called parked.
 
-Against 48.3 % on the tuning drive. The gap is real: **drive 0009's junction was
-favourable traffic**, and any single-clip number for this method is a property of
-the traffic as much as of the method. Per-drive recall ranges from 7.0 % to
-34.5 %.
+Per drive, and the spread is the real story:
 
-| drive | instances | recall | median tangential | median box area |
-|---|---|---|---|---|
-| 0013 | 57 | 22.8 % | 0.363 | 806 px² |
-| 0014 | 199 | **7.0 %** | 0.244 | **483 px²** |
-| 0018 | 45 | 11.1 % | 0.240 | 697 px² |
-| 0051 | 473 | **34.5 %** | 0.220 | 792 px² |
-| 0056 | 167 | 24.6 % | 0.216 | 1088 px² |
-| 0059 | 271 | 23.2 % | 0.223 | 650 px² |
+| drive | frames | instances | recall | precision | mask IoU |
+|---|---|---|---|---|---|
+| 0009 | 103 | 151 | 31.8 % | 49.5 % | 3.6 % |
+| 0013 | 56 | 88 | 35.2 % | 55.3 % | 11.7 % |
+| 0014 | 106 | 315 | **7.0 %** | 32.6 % | 3.2 % |
+| 0018 | 108 | 307 | 36.2 % | **18.3 %** | 12.6 % |
+
+### mIoU — the metric the literature actually reports
+
+| | |
+|---|---|
+| frames scored | 365 |
+| **IoU of the moving class** | **7.38 %** [4.50, 10.42] |
+
+This is the honest comparison and it is not flattering. Supervised MODNet-era
+work reports mIoU an order of magnitude higher on this dataset. Two reasons, one
+legitimate and one not:
+
+- *Legitimate:* this method is unsupervised and trains nothing, while those
+  numbers come from networks trained on these labels. Different problem.
+- *Not legitimate as an excuse:* the surprise mask covers only the part of an
+  object whose depth was mispredicted — a flank, a bumper — not its silhouette.
+  As a **detector** (does a box land on the moving thing) it reaches 24.6 % recall
+  at 26.4 % precision. As a **segmenter** it is poor, and mIoU measures
+  segmentation.
+
+If the goal were mIoU, the right move would be to grow each detection to an
+object mask — the surprise blob as a seed for a segmentation step — which is not
+built.
 
 ### What actually governs recall: apparent size
 
@@ -283,15 +312,13 @@ foliage, both plausible failure modes for a forward warp. The majority contain a
 vehicle that the tracklets do not cover, mostly cars in flowing traffic on a busy
 road.
 
-**That means precision is understated.** On drive 0051, 178 of 315 detections
-matched an annotated *moving* object, giving the reported 56.5 %. If the 30
-vehicle-containing unmatched detections are moving traffic — they look like it,
-though motion cannot be confirmed without labels — precision would be
-**(178+30)/315 = 66.0 %**, about ten points higher. The honest statement is that
-56.5 % is a lower bound and the true value lies between it and ~66 %.
-
-This is a second, independent reason the self-derived ground truth is the wrong
-foundation, and it points the same way: use KittiMoSeg.
+**That means precision was understated, and KittiMoSeg later confirmed it.** The
+guess at the time was that precision sat between the reported 56.5 % and ~66 % if
+those 30 vehicles were moving traffic. Scoring against real labels settled it
+from the other direction: the static-object false-flag rate is **3.1 %, not
+16.9 %**, because most of what my labels called "flagging a parked car" was
+flagging a car they had wrongly labelled parked. The contact sheet was reading
+the ground truth's errors, not the detector's.
 
 ### The causal asterisk, measured
 
@@ -580,6 +607,12 @@ still ranges 7.0–34.5 %, so clip selection matters more than any remaining
 parameter choice. All seven drives are from the same recording session
 (2011_09_26): same camera, same city, same afternoon light. Nothing here speaks
 to weather, night, or another sensor.
+
+**mIoU is an order of magnitude below supervised work.** 7.4 % against
+MODNet-era numbers on the same dataset. The detector-level figures are more
+respectable, but if the task is stated as motion *segmentation* this method is
+not competitive, and the gap is structural: it marks the mispredicted part of an
+object, not the object.
 
 **RAFT is now the baseline, and it is closer than Farneback suggested.** A
 KITTI-finetuned RAFT-large residual matches this method's precision and beats its
