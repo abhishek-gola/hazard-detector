@@ -161,6 +161,49 @@ and is the more honest headline. And **drive 0001 scores 0.0 % on everything wit
 88 instances**, which is a total failure rather than a bad clip, and is not yet
 diagnosed.
 
+### Drive 0001, diagnosed
+
+The worst clip is worth a paragraph because it bounds what the method can claim.
+
+| | drive 0001 | drive 0051 |
+|---|---|---|
+| frames / moving instances | 52 / 64 | 108 / 575 |
+| **detections emitted** | **3** | 315 |
+| median moving box area | 550 px² | 759 px² |
+| VGGT depth range | 0.13–3.62 | 0.14–3.44 |
+| box score, moving vs parked | 0.67 vs 0.40 | **33.14 vs 8.57** |
+| box-level AUC | **0.617** | 0.729 |
+
+Two things are wrong at once. The **absolute** scores are ~50× lower, so almost
+nothing clears z = 8 — three detections in 52 frames. And the **discrimination**
+is weak independently of scale: AUC 0.617, barely above chance, against 0.729.
+VGGT's depth range is normal, so the backbone is not failing.
+
+The obvious suspect was the per-frame robust normalisation: it divides out global
+forecast error by design, so a clip with large global error has its local signal
+divided out too, and an absolute z threshold then means different things on
+different drives. **Tested and rejected** — replacing the absolute threshold with
+a per-frame percentile does not rescue drive 0001 (0 % → 3 % at best) and is worse
+pooled:
+
+| threshold rule | recall | precision | F1 |
+|---|---|---|---|
+| absolute z ≥ 8 (shipped) | 27.6 % | 39.2 % | 0.324 |
+| absolute z ≥ 13 | **28.9 %** | **44.2 %** | **0.349** |
+| per-frame p99.0 | 21.1 % | 44.5 % | 0.287 |
+| per-frame p98.0 | 28.6 % | 41.7 % | 0.340 |
+
+*(four drives: 0001, 0014, 0018, 0051)*
+
+So drive 0001 is a clip where the signal is genuinely weak, not one where a
+normalisation artifact hides it. Which of small objects, near-radial motion, or
+scene content is responsible is not separated by the diagnostics here.
+
+Note also that **z ≥ 13 beats the shipped z ≥ 8** on these four drives. The
+default is *not* being changed on that basis: four drives selected partly because
+one of them fails is evaluation data, and re-tuning a threshold against it is the
+same mistake as calibrating on the test set.
+
 ### What actually governs recall: apparent size
 
 *Produced by `scripts/test_once.py --drives 0013,0014,0018,0051,0056,0059` (self-derived labels).*
@@ -629,9 +672,10 @@ above rather than hidden.
 **Per-drive variance exceeds every effect measured.** Over 15 drives, precision
 has median 52.8 % and IQR [30.8, 61.3] among drives with >=100 instances, and
 instance-weighted precision (38.7 %) sits well below the unweighted median
-(55.3 %) because the busiest clips are the hardest. Drive 0001 scores 0.0 % on
-recall, precision and IoU across 88 instances -- an outright failure, not yet
-diagnosed. Clip selection matters more than any parameter in this repo.
+(55.3 %) because the busiest clips are the hardest. Drive 0001 scores 0.0 % across 88 instances,
+and is diagnosed above: box-level AUC 0.617 and absolute scores ~50x lower than
+drive 0051, with adaptive thresholding rejected as a fix. Clip selection matters
+more than any parameter in this repo.
 
 **Recall collapses with apparent size.** Objects over 2000 px² are found at
 66.3 %; under 600 px², 9.6 % [5.2, 15.0]. More than half of all annotated moving
