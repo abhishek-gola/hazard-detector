@@ -114,73 +114,52 @@ Every table below names the script that produces it, and
 
 ### Primary results: scored against KittiMoSeg
 
-*Produced by `scripts/eval_moseg.py`, section 2. CIs bootstrap over 108 real KittiMoSeg track ids.*
+*Produced by `scripts/eval_moseg.py`, section 2. CIs bootstrap over real
+KittiMoSeg track ids.*
 
 Frozen config (noise model, normalised blur, threshold 8, tracker gate, blob
-rules), all chosen on drive 0009 before any other drive was fetched. Seven drives,
-689 frames, **2,024 moving instances**.
+rules), all chosen on drive 0009 before any other drive was fetched. **15 of the
+release's 38 drives**, 1,262 frames, **3,138 moving instances over 157 tracks**.
 
-| | vs KittiMoSeg | vs self-derived labels |
-|---|---|---|
-| moving instances | **2024** | 1216 |
-| recall | **28.7 %** [23.3, 34.5] | 24.7 % [18.8, 30.4] |
-| precision | **43.3 %** | 24.5 % |
-| static-object false-flag rate | **4.9 %** (83/1707) | 16.9 % |
+| | 15 drives (current) | 7 drives (earlier) | self-derived labels |
+|---|---|---|---|
+| moving instances | **3138** | 2024 | 1216 |
+| recall | **27.2 %** [22.8, 31.8] | 28.7 % [23.8, 33.6] | 24.7 % |
+| precision | **38.7 %** | 43.3 % | 24.5 % |
+| static false-flag rate | **4.9 %** | 4.9 % | 16.9 % |
+| mask IoU | **10.21 %** [8.09, 12.40] | 12.45 % | — |
 
-**Against real labels the detector is considerably better than my own labels
-suggested** — precision 43.3 % rather than 24.5 %, and a 4.9 % false-alarm rate
-rather than 16.9 %. Both differences are the same artifact: my labels omitted 41 %
-of movers, so detections on them were scored as false alarms against parked cars.
+Every number drifts slightly down as drives are added, which is what should
+happen: the first seven were chosen for traffic density and the later ones were
+not. The interval tightens (±5.0 → ±4.5 points) but not dramatically, because
+157 tracks is still not many.
 
-Per drive, and the spread is the real story — precision ranges 18 % to 83 %:
+### Per-drive spread, now a distribution rather than a range
 
-| drive | frames | instances | recall | precision | mask IoU |
-|---|---|---|---|---|---|
-| 0009 | 103 | 151 | 31.8 % | 49.5 % | 3.6 % |
-| 0013 | 56 | 88 | 35.2 % | 55.3 % | 11.7 % |
-| 0014 | 106 | 315 | **7.0 %** | 32.6 % | 3.2 % |
-| 0018 | 108 | 307 | 36.2 % | **18.3 %** | 12.6 % |
-| 0051 | 108 | 634 | 37.5 % | **82.5 %** | **24.8 %** |
-| 0056 | 108 | 233 | 26.6 % | 49.2 % | 16.8 % |
-| 0059 | 108 | 296 | 23.0 % | 56.3 % | 12.9 % |
+This is the dominant source of variance in the whole project — larger than any
+effect measured anywhere else in this README.
 
-### mIoU — against the actual published numbers
-
-*Produced by `scripts/eval_moseg.py`, section 3.*
-
-| | Precision | Recall | F-score | **motion-segmentation IoU** |
+| metric | median | IQR | min | max |
 |---|---|---|---|---|
-| MODNet (RGB+OF), separate — *supervised* | 44.34 | 69.84 | 54.25 | **37.22** |
-| MODNet (RGB+OF), joint — *supervised* | 56.18 | 70.32 | 62.46 | **45.41** |
-| **this method — unsupervised, zero training** | — | — | — | **12.45** [9.59, 15.48] |
+| recall | 26.2 % | [15.3, 35.7] | 0.0 % | 74.1 % |
+| precision | 55.3 % | [25.2, 68.5] | 0.0 % | 100.0 % |
+| mask IoU | 7.0 % | [3.0, 12.8] | 0.1 % | 24.8 % |
 
-MODNet's Table II reports the task-level motion-segmentation figure, not a
-per-class IoU, so that is how the column is labelled here; mine is the IoU of the
-moving class against `binary_img_Output`, which is the closest available match
-but not provably the identical quantity.
+Restricted to the 10 drives with ≥100 instances, which removes the misleading
+extremes (precision 100 % is n=15; 9.4 % is n=27):
 
-MODNet numbers are Table II of
-[arXiv:1709.04821](https://arxiv.org/abs/1709.04821), motion segmentation on
-KITTI MOD, input resolution 1048×384. Mine is 689 frames over seven drives of
-Rashed's 12,919-frame extension at 224×448.
+| metric | median | IQR | min | max |
+|---|---|---|---|---|
+| recall | 26.4 % | [21.0, 35.5] | 7.0 % | 41.3 % |
+| precision | 52.8 % | [30.8, 61.3] | 18.3 % | 82.5 % |
+| mask IoU | 12.3 % | [5.2, 14.3] | 1.9 % | 24.8 % |
 
-**So the gap is 3–3.6×, not the "order of magnitude" an earlier draft of this
-README guessed at.** Three things make the comparison indicative rather than
-like-for-like, and only the first is in my favour:
-
-- MODNet is **supervised on this task**, trained on these labels. This method
-  trains nothing and has never seen a motion label.
-- MODNet runs at 1048×384 — **four times the pixels**. At 224×448 a car at 40 m
-  is a few hundred pixels, and mask IoU punishes low resolution hard.
-- **It is not their test split.** I scored seven drives chosen for traffic density,
-  not KITTI MOD's evaluation split, so this is not a benchmark result.
-
-The structural reason for the gap is not resolution or supervision though: the
-surprise mask covers the *mispredicted part* of an object — a flank, a bumper —
-not its silhouette. As a **detector** (does a box land on the moving thing) this
-reaches 28.7 % recall at 43.3 % precision unsupervised. As a **segmenter** it is
-5–6× off supervised work, and mIoU measures segmentation. Closing that would mean
-using the blob as a seed for a segmentation step, which is not built.
+Two things worth reading off this. **Instance-weighted precision (38.7 %) is far
+below the unweighted median (55.3 %)**, because the drives with the most moving
+objects are the hardest — so the pooled figure is dominated by difficult clips
+and is the more honest headline. And **drive 0001 scores 0.0 % on everything with
+88 instances**, which is a total failure rather than a bad clip, and is not yet
+diagnosed.
 
 ### What actually governs recall: apparent size
 
@@ -647,10 +626,12 @@ above rather than hidden.
 **Not usable as a detector.** 28.7 % recall [23.8, 33.6] at 43.3 % precision,
 0.59 s/frame. That is a dataset-mining tool, not a perception component.
 
-**Per-drive variance exceeds every effect measured.** Precision ranges 18.3 %
-(drive 0018) to 82.5 % (drive 0051); recall 7.0 % to 37.5 %. Clip selection
-matters more than any parameter in the repo, which means the pooled numbers
-describe this drive mix rather than the method.
+**Per-drive variance exceeds every effect measured.** Over 15 drives, precision
+has median 52.8 % and IQR [30.8, 61.3] among drives with >=100 instances, and
+instance-weighted precision (38.7 %) sits well below the unweighted median
+(55.3 %) because the busiest clips are the hardest. Drive 0001 scores 0.0 % on
+recall, precision and IoU across 88 instances -- an outright failure, not yet
+diagnosed. Clip selection matters more than any parameter in this repo.
 
 **Recall collapses with apparent size.** Objects over 2000 px² are found at
 66.3 %; under 600 px², 9.6 % [5.2, 15.0]. More than half of all annotated moving
